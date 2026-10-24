@@ -1,0 +1,40 @@
+# Meshtastic A0 plugin configuration.
+# The radio is reached over the Meshtastic TCP API (default port 4403), either
+# directly on a node (e.g. a Pi running meshtasticd) or through a Meshmonitor
+# proxy that lets multiple clients share one node.
+
+connection:
+  # Human label for this node/connection.
+  name: "My Node"
+  # Hostname or IP of the node/proxy exposing the Meshtastic TCP API.
+  # Leave empty until set in Config; the bridge will not start without it.
+  host: ""
+  port: 4403
+
+# Inbound chat bridge: mesh DMs -> Agent Zero -> reply back over the mesh.
+bridge:
+  # Start the listener automatically when Agent Zero boots.
+  auto_start: false
+  # Node IDs allowed to talk to the agent via DM (e.g. ["!12345678"]).
+  # Empty list = allow any sender (rate-limited). Set an allowlist on a live mesh.
+  allowed_nodes: []
+  # Also treat broadcasts on channel_index as inbound prompts (default off to
+  # avoid reacting to general mesh chatter).
+  respond_to_broadcasts: false
+  channel_index: 0
+  # Extra instructions appended to the bridge prompt for this connection.
+  instructions: ""
+  # Optional default agent profile / model preset for bridge contexts.
+  default_agent_profile: ""
+  default_preset: ""
+  # Safety limits. Meshtastic caps a text payload at 200 BYTES; inbound
+  # messages already obey that, so this mirrors the protocol limit.
+  max_message_length: 200
+  rate_limit_max: 6
+  rate_limit_window: 120
+
+# Outbound sends via the meshtastic_send tool.
+send:
+  # Allow broadcasts to ^all (spam risk on a live mesh). Off by default.
+  allow_broadcast: false
+  broadcast_channel: 0

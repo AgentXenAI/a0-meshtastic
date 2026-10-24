@@ -1,0 +1,106 @@
+<html>
+<head><title>Meshtastic</title></head>
+<body>
+<div x-data>
+  <template x-if="config">
+    <div x-init="
+      config.connection = config.connection || {};
+      config.bridge = config.bridge || {};
+      config.send = config.send || {};
+      if (config.connection.name === undefined) config.connection.name = 'Meshtastic';
+      if (config.connection.host === undefined) config.connection.host = '';
+      if (config.connection.port === undefined) config.connection.port = 4403;
+      if (config.bridge.auto_start === undefined) config.bridge.auto_start = false;
+      if (!Array.isArray(config.bridge.allowed_nodes)) config.bridge.allowed_nodes = [];
+      if (config.bridge.respond_to_broadcasts === undefined) config.bridge.respond_to_broadcasts = false;
+      if (config.bridge.channel_index === undefined) config.bridge.channel_index = 0;
+      if (config.bridge.instructions === undefined) config.bridge.instructions = '';
+      if (config.bridge.rate_limit_max === undefined) config.bridge.rate_limit_max = 6;
+      if (config.bridge.rate_limit_window === undefined) config.bridge.rate_limit_window = 120;
+      if (config.send.allow_broadcast === undefined) config.send.allow_broadcast = false;
+      if (config.send.broadcast_channel === undefined) config.send.broadcast_channel = 0;
+    ">
+      <div class="section-title">Meshtastic</div>
+      <div class="section-description">Connect to a Meshtastic node over TCP, route inbound mesh DMs into Agent Zero, and send messages back over the mesh.</div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Connection name</div>
+          <div class="field-description">Internal label for this node.</div></div>
+        <div class="field-control"><input type="text" x-model="config.connection.name" placeholder="My Node" /></div>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Host</div>
+          <div class="field-description">Hostname/IP of the node exposing the Meshtastic TCP API. Leave empty to disable.</div></div>
+        <div class="field-control"><input type="text" x-model="config.connection.host" placeholder="node.local" /></div>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Port</div>
+          <div class="field-description">Meshtastic TCP API port (default 4403).</div></div>
+        <div class="field-control"><input type="number" min="1" max="65535" x-model.number="config.connection.port" /></div>
+      </div>
+
+      <div class="section-title" style="margin-top:1.2em;">Chat bridge</div>
+      <div class="section-description">Mesh DMs are routed into an Agent Zero context and the reply is sent back over the mesh. Inbound text is treated as untrusted.</div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Auto-start bridge</div>
+          <div class="field-description">Start the listener automatically when Agent Zero boots (requires a host above).</div></div>
+        <div class="field-control"><label class="toggle"><input type="checkbox" x-model="config.bridge.auto_start" /><span class="toggler"></span></label></div>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Allowed node IDs</div>
+          <div class="field-description">Comma-separated node IDs allowed to drive the agent (e.g. !12345678). Empty = allow any sender (rate-limited). Set an allowlist on a live mesh.</div></div>
+        <div class="field-control"><input type="text" :value="config.bridge.allowed_nodes.join(', ')"
+          @input="config.bridge.allowed_nodes = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)"
+          placeholder="!12345678" /></div>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Respond to broadcasts</div>
+          <div class="field-description">Also treat broadcasts on the channel as inbound prompts. Off by default to avoid reacting to general mesh chatter.</div></div>
+        <div class="field-control"><label class="toggle"><input type="checkbox" x-model="config.bridge.respond_to_broadcasts" /><span class="toggler"></span></label></div>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Channel index</div>
+          <div class="field-description">Channel the bridge listens on / replies to.</div></div>
+        <div class="field-control"><input type="number" min="0" max="7" x-model.number="config.bridge.channel_index" /></div>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Bridge instructions</div>
+          <div class="field-description">Extra persona instructions appended to the bridge prompt.</div></div>
+        <div class="field-control" style="width:100%;"><textarea rows="3" style="width:100%;" x-model="config.bridge.instructions"></textarea></div>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Rate limit</div>
+          <div class="field-description">Max messages per node within the window (seconds).</div></div>
+        <div class="field-control" style="display:flex;gap:0.5em;">
+          <input type="number" min="1" x-model.number="config.bridge.rate_limit_max" style="width:6em;" />
+          <span>/</span>
+          <input type="number" min="1" x-model.number="config.bridge.rate_limit_window" style="width:7em;" />
+          <span class="field-description">sec</span>
+        </div>
+      </div>
+
+      <div class="section-title" style="margin-top:1.2em;">Outbound sends</div>
+      <div class="field">
+        <div class="field-label"><div class="field-title">Allow broadcasts</div>
+          <div class="field-description">Permit the meshtastic_send tool to broadcast to ^all. Spam risk on a live mesh — keep off unless needed.</div></div>
+        <div class="field-control"><label class="toggle"><input type="checkbox" x-model="config.send.allow_broadcast" /><span class="toggler"></span></label></div>
+      </div>
+
+      <div class="field" x-show="config.send.allow_broadcast" x-transition>
+        <div class="field-label"><div class="field-title">Broadcast channel</div>
+          <div class="field-description">Default channel index for broadcasts.</div></div>
+        <div class="field-control"><input type="number" min="0" max="7" x-model.number="config.send.broadcast_channel" /></div>
+      </div>
+    </div>
+  </template>
+</div>
+</body>
+</html>
