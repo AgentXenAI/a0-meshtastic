@@ -1,7 +1,7 @@
 name: meshtastic_a0
 title: Meshtastic A0
 description: Chat bridge and messaging for Meshtastic LoRa mesh nodes over TCP (direct node or Meshmonitor proxy). Route inbound mesh DMs into Agent Zero and reply back over the mesh, plus an agent tool to send DMs/broadcasts.
-version: 1.0.0
+version: 1.0.1
 settings_sections:
   - external
 per_project_config: true
