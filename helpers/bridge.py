@@ -33,118 +33,43 @@ _node_locks = {}
 _INVISIBLE = re.compile(r"[\u200b-\u200f\u2060-\u2064\ufeff\u00ad]+")
 
 # Outbound messages this node has sent, remembered so an inbound packet can be
-# recognised as a reply to one of them. (id, channel) pairs; bounded.
-_sent_ids = collections.deque(maxlen=200)
-_sent_lock = threading.Lock()
-
-# Where the sent-id ledger lives, so it survives a bridge/backend restart.
+# recognised as a reply to one of them. The ledger lives in gatekeeper so the
+# gate and the listener share exactly one store; it survives a restart.
 _SENT_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sent-log.jsonl")
-_sent_log_loaded = False
+_ledger = None
+
+# Our own long name, used to build the literal @mention tokens.
+_SELF_LONG_NAME = "xenmesh"
 
 
 def _sent_log_path():
     return os.path.abspath(_SENT_LOG)
 
 
-def _load_sent_log():
-    """Rehydrate the sent-id ledger from disk once per process."""
-    global _sent_log_loaded
-    if _sent_log_loaded:
-        return
-    _sent_log_loaded = True
-    path = _sent_log_path()
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            lines = fh.readlines()
-    except FileNotFoundError:
-        return
-    except Exception:
-        logger.exception("Meshtastic sent-log load failed")
-        return
-    kept = []
-    for line in lines:
-        try:
-            rec = json.loads(line)
-            mid = rec.get("id")
-            if mid is not None:
-                pair = (int(mid), int(rec.get("channel", 0) or 0))
-                with _sent_lock:
-                    _sent_ids.append(pair)
-                kept.append(pair)
-        except Exception:
-            continue
-    # The append-only file would otherwise grow forever; compact it to the
-    # window the in-memory deque actually keeps.
-    if len(lines) > 500:
-        try:
-            with open(path, "w", encoding="utf-8") as fh:
-                for mid, ch in kept[-200:]:
-                    fh.write(json.dumps({"id": mid, "channel": ch}) + "\n")
-        except Exception:
-            logger.exception("Meshtastic sent-log compaction failed")
+def _gate():
+    """Lazy accessor for the dumb gate module (avoids an import cycle at load)."""
+    from usr.plugins.meshtastic_a0.helpers import gatekeeper
+    return gatekeeper
+
+
+def _ledger_instance():
+    global _ledger
+    if _ledger is None:
+        _ledger = _gate().Ledger(_sent_log_path())
+    return _ledger
 
 
 def _remember_sent(msg_id, channel):
     """Record an outbound message id so a later reply to it can be detected."""
-    if msg_id is None:
-        return
     try:
-        msg_id = int(msg_id)
-    except (TypeError, ValueError):
-        return
-    _load_sent_log()
-    pair = (msg_id, int(channel or 0))
-    with _sent_lock:
-        if pair in _sent_ids:
-            return
-        _sent_ids.append(pair)
-    try:
-        with open(_sent_log_path(), "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"id": msg_id, "channel": int(channel or 0),
-                                 "ts": datetime.now(timezone.utc).isoformat()}) + "\n")
+        _ledger_instance().add(msg_id, channel)
     except Exception:
         logger.exception("Meshtastic sent-log write failed")
 
 
-def _is_reply_to_mine(decoded, channel):
-    """True if this inbound packet's reply_id points at a message we sent."""
-    try:
-        rid = (decoded or {}).get("replyId") or (decoded or {}).get("reply_id")
-    except Exception:
-        return False
-    if not rid:
-        return False
-    try:
-        rid = int(rid)
-    except (TypeError, ValueError):
-        return False
-    _load_sent_log()
-    with _sent_lock:
-        pairs = list(_sent_ids)
-    if (rid, int(channel or 0)) in pairs:
-        return True
-    # Some clients drop the channel field on replies; accept an id match alone.
-    return any(mid == rid for mid, _ in pairs)
-
-
 def _mention_tokens(bridge):
-    """Strings that count as addressing this node on the public channel."""
-    tokens = ["@xenmesh", "@xen"]
-    node_id = str(bridge.get("self_node_id", "") or "").strip()
-    if node_id:
-        tokens.append("@" + node_id)
-    return tokens
-
-
-def _is_addressed(text, bridge):
-    """True only if the message explicitly names this node (@xenmesh / @!b4c5d7fa).
-
-    Deliberately literal: no fuzzy matching, no substring on bare words, so a
-    message that merely talks about bots or about Xen is not treated as a
-    request for a reply.
-    """
-    low = str(text or "").casefold()
-    return any(tok.casefold() in low for tok in _mention_tokens(bridge))
+    """Literal @tokens that count as addressing this node on public airtime."""
+    return _gate().mention_tokens(bridge.get("self_node_id", ""), _SELF_LONG_NAME)
 
 
 def _sanitize(text, limit=500):
@@ -362,6 +287,14 @@ def _handle_packet(packet, interface, config):
         except Exception:
             logger.exception("Meshtastic blocklist check failed")
 
+        # Our own packets echo back at us (rebroadcasts, local enqueues). Never
+        # let one of those drive a turn: that is a feedback loop waiting to fire.
+        try:
+            if _gate().is_self(frm, my_id_str):
+                return
+        except Exception:
+            pass
+
         # Trust classes: a DM from an allowlisted node is the operator talking
         # to the agent (full profile + tools). Anything else that reaches the
         # agent is public broadcast traffic and runs sandboxed.
@@ -376,12 +309,17 @@ def _handle_packet(packet, interface, config):
             # the sandboxed broadcast profile, and the reply goes back to the
             # channel (^all), not as a DM to the sender.
             #
-            # HARD GATE: on shared airtime we only ever transmit when the message
-            # is explicitly addressed to this node (@xenmesh / @!b4c5d7fa) or is a
-            # reply to a message this node actually sent. Everything else is
-            # recorded and ignored. Silence is the default on public channels.
-            if not (_is_addressed(text, bridge) or _is_reply_to_mine(decoded, channel)):
-                logger.info("Meshtastic broadcast not addressed to us, ignored (%s)", frm)
+            # HARD GATE: one dumb listener decides, in one place, and returns a
+            # reason we can log. On shared airtime we transmit only when the
+            # message names this node (@xenmesh / @!b4c5d7fa) or replies to a
+            # packet this node actually sent. Everything else is recorded and
+            # dropped. Silence is the default on public channels.
+            rid = (decoded or {}).get("replyId") or (decoded or {}).get("reply_id")
+            allowed, reason = _gate().evaluate(text, rid, channel,
+                                               _mention_tokens(bridge),
+                                               _ledger_instance(), my_id_str, frm)
+            if not allowed:
+                logger.info("Meshtastic broadcast ignored (%s): %s", frm, reason)
                 return
             trusted = False
             reply_mode, reply_channel = "broadcast", channel
