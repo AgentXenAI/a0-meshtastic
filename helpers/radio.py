@@ -8,6 +8,7 @@ Meshtastic enforces a hard 200-BYTE payload limit per text message. The mesh is
 shared, low-bandwidth airspace, so every outbound message is clamped to 200 bytes
 (UTF-8, never splitting a multibyte character) at this single chokepoint.
 """
+import collections
 import logging
 import threading
 
@@ -61,15 +62,20 @@ def _connect(host, port, no_nodes=False):
 
 
 def send_text(host, port, dest, text, channel=None):
-    """Send a DM to a node id (e.g. '!12345678'). Text is clamped to 200 bytes."""
+    """Send a DM to a node id (e.g. '!12345678'). Text is clamped to 200 bytes.
+
+    Returns the on-wire packet id (int) of the sent message, or None if the
+    client did not report one. The bridge records that id so it can recognise a
+    later reply to this message.
+    """
     text = clamp_bytes(text)
     iface = _connect(host, port, no_nodes=True)
     try:
         kwargs = {"destinationId": dest}
         if channel is not None:
             kwargs["channelIndex"] = int(channel)
-        iface.sendText(text, **kwargs)
-        return iface
+        pkt = iface.sendText(text, **kwargs)
+        return getattr(pkt, "id", None)
     finally:
         try:
             iface.close()
@@ -78,12 +84,15 @@ def send_text(host, port, dest, text, channel=None):
 
 
 def send_broadcast(host, port, text, channel=0):
-    """Broadcast to ^all on a channel. Text is clamped to 200 bytes."""
+    """Broadcast to ^all on a channel. Text is clamped to 200 bytes.
+
+    Returns the on-wire packet id (int) of the sent message, or None.
+    """
     text = clamp_bytes(text)
     iface = _connect(host, port, no_nodes=True)
     try:
-        iface.sendText(text, channelIndex=int(channel))
-        return iface
+        pkt = iface.sendText(text, channelIndex=int(channel))
+        return getattr(pkt, "id", None)
     finally:
         try:
             iface.close()

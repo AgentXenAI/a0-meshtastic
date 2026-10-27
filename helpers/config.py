@@ -33,8 +33,16 @@ def get_meshtastic_config(agent=None):
     bridge.setdefault("allowed_nodes", [])
     bridge.setdefault("respond_to_broadcasts", False)
     bridge.setdefault("channel_index", 0)
+    # This node's own id, e.g. "!b4c5d7fa". Used to build the @mention token that
+    # gates public replies. Left empty, only "@xenmesh" addresses the node.
+    bridge.setdefault("self_node_id", "")
     bridge.setdefault("instructions", "")
     bridge.setdefault("default_agent_profile", "")
+    # Per-trust-class profiles: trusted DMs vs public broadcasts.
+    bridge.setdefault("dm_agent_profile", "")
+    bridge.setdefault("broadcast_agent_profile", "")
+    # Tools the sandboxed public-broadcast persona may use (besides response).
+    bridge.setdefault("broadcast_allowed_tools", ["search_engine", "meshtastic_read", "meshview"])
     bridge.setdefault("default_preset", "")
     # Locked to the Meshtastic protocol cap (200 bytes). Not user-configurable;
     # any stored value is overridden so the UI cannot change it.

@@ -27,6 +27,13 @@ bridge:
   # Optional default agent profile / model preset for bridge contexts.
   default_agent_profile: ""
   default_preset: ""
+  # Per-trust-class profiles: trusted DMs vs public broadcasts.
+  dm_agent_profile: ""
+  broadcast_agent_profile: ""
+  # Read-only tools the public broadcast persona may use besides `response`
+  # (e.g. ["search_engine"] for weather / local events). Everything that can
+  # touch the host stays blocked regardless. Trusted DMs ignore this.
+  broadcast_allowed_tools: ["search_engine", "meshtastic_read", "meshview"]
   # Safety limits. Meshtastic caps a text payload at 200 BYTES; inbound
   # messages already obey that, so this mirrors the protocol limit.
   max_message_length: 200

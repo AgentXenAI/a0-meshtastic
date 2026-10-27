@@ -15,6 +15,10 @@
       if (config.bridge.respond_to_broadcasts === undefined) config.bridge.respond_to_broadcasts = false;
       if (config.bridge.channel_index === undefined) config.bridge.channel_index = 0;
       if (config.bridge.instructions === undefined) config.bridge.instructions = '';
+      if (config.bridge.default_agent_profile === undefined) config.bridge.default_agent_profile = '';
+      if (config.bridge.dm_agent_profile === undefined) config.bridge.dm_agent_profile = '';
+      if (config.bridge.broadcast_agent_profile === undefined) config.bridge.broadcast_agent_profile = '';
+      if (!Array.isArray(config.bridge.broadcast_allowed_tools)) config.bridge.broadcast_allowed_tools = ['search_engine'];
       if (config.bridge.rate_limit_max === undefined) config.bridge.rate_limit_max = 6;
       if (config.bridge.rate_limit_window === undefined) config.bridge.rate_limit_window = 120;
       if (config.send.allow_broadcast === undefined) config.send.allow_broadcast = false;
@@ -74,6 +78,32 @@
         <div class="field-label"><div class="field-title">Bridge instructions</div>
           <div class="field-description">Extra persona instructions appended to the bridge prompt.</div></div>
         <div class="field-control" style="width:100%;"><textarea rows="3" style="width:100%;" x-model="config.bridge.instructions"></textarea></div>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Trusted DM profile</div>
+          <div class="field-description">Agent profile used when an allowlisted node sends a DM (the operator). Full tools. Empty falls back to the default profile below. Example: tiny-local</div></div>
+        <div class="field-control"><input type="text" x-model="config.bridge.dm_agent_profile" placeholder="tiny-local" /></div>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Broadcast profile</div>
+          <div class="field-description">Agent profile used for public broadcast traffic. Runs sandboxed (response tool only). Empty falls back to the default profile below. Example: mesh-xen</div></div>
+        <div class="field-control"><input type="text" x-model="config.bridge.broadcast_agent_profile" placeholder="mesh-xen" /></div>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Default profile (fallback)</div>
+          <div class="field-description">Used when the trusted/broadcast profile above is left empty.</div></div>
+        <div class="field-control"><input type="text" x-model="config.bridge.default_agent_profile" placeholder="mesh-xen" /></div>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Broadcast tools</div>
+          <div class="field-description">Comma-separated read-only tools the public broadcast persona may use besides `response` (e.g. search_engine for weather, meshtastic_read for recent mesh messages, meshview for packet propagation). Host-touching tools stay blocked. Trusted DMs ignore this.</div></div>
+        <div class="field-control"><input type="text" :value="config.bridge.broadcast_allowed_tools.join(', ')"
+          @input="config.bridge.broadcast_allowed_tools = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)"
+          placeholder="search_engine, meshtastic_read, meshview" /></div>
       </div>
 
       <div class="field">
