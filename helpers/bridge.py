@@ -338,6 +338,26 @@ def _handle_packet(packet, interface, config):
             pass
         _record(frm, name, _sanitize(text, 200), "dm" if is_dm else "broadcast", channel)
 
+        # Evidence store + live triage happen before the block check, so a
+        # message from a node we refuse to answer is still recorded and scored.
+        try:
+            from usr.plugins.meshtastic_a0.helpers import blocklist
+            blocklist.log_inbound(frm, name, text, "dm" if is_dm else "broadcast", channel)
+            blocklist.flag_from_message(frm, name, text)
+        except Exception:
+            logger.exception("Meshtastic inbound triage failed")
+
+        # HARD BLOCK: a blocked node gets no model turn and no reply, in either
+        # direction. Enforced here, in code, before any model runs - it does not
+        # depend on the model deciding to be polite about it.
+        try:
+            from usr.plugins.meshtastic_a0.helpers import blocklist
+            if blocklist.is_blocked(frm):
+                logger.info("Meshtastic blocked node ignored (%s)", frm)
+                return
+        except Exception:
+            logger.exception("Meshtastic blocklist check failed")
+
         # Trust classes: a DM from an allowlisted node is the operator talking
         # to the agent (full profile + tools). Anything else that reaches the
         # agent is public broadcast traffic and runs sandboxed.
