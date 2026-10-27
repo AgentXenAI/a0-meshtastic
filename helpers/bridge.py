@@ -297,9 +297,13 @@ def _process_message(config, frm, name, text, trusted=False, reply_mode="dm", re
         context = _get_context(frm, name, config, trusted)
         fut = asyncio.run_coroutine_threadsafe(_run_agent(context, name or frm, text, config), _loop)
         reply = fut.result(timeout=300)
-        # The public persona is allowed to decline. If it does, nothing is sent.
-        if reply_mode == "broadcast" and _is_silence(reply):
-            logger.info("Meshtastic broadcast turn declined as silent (%s)", frm)
+        # The persona is allowed to decline, in either direction; if it does,
+        # nothing is transmitted. This guard used to be broadcast-only, so a
+        # trusted DM whose turn answered SILENT transmitted the literal word
+        # "SILENT" over the air - worse than silence and worse than a reply.
+        # One contract, both modes: SILENT means send nothing.
+        if _is_silence(reply):
+            logger.info("Meshtastic %s turn declined as silent (%s)", reply_mode, frm)
             return
         if reply_mode == "broadcast":
             _send_broadcast_reply(config, reply_channel, reply or "")
