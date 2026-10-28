@@ -47,8 +47,17 @@ def get_meshtastic_config(agent=None):
     # Locked to the Meshtastic protocol cap (200 bytes). Not user-configurable;
     # any stored value is overridden so the UI cannot change it.
     bridge["max_message_length"] = 200
-    bridge.setdefault("rate_limit_max", 6)
+    bridge.setdefault("rate_limit_max", 3)
     bridge.setdefault("rate_limit_window", 120)
+    # Escalation: Discord channel id that receives T2/T3 pings. Empty = no ping.
+    bridge.setdefault("escalation_discord_channel", "")
+    # Conversation starter (Xen opening a thread). Off by default.
+    bridge.setdefault("starter_enabled", False)
+    bridge.setdefault("starter_idle_hours", 4)
+    bridge.setdefault("starter_max_per_day", 1)
+    bridge.setdefault("starter_quiet_start", "23:00")
+    bridge.setdefault("starter_quiet_end", "07:00")
+    bridge.setdefault("starter_agent_profile", "")
 
     send = config.setdefault("send", {})
     send.setdefault("allow_broadcast", False)

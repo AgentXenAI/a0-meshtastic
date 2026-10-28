@@ -39,6 +39,18 @@ bridge:
   max_message_length: 200
   rate_limit_max: 3
   rate_limit_window: 120
+  # Discord channel id that receives escalation pings (T2 injection / T3 PII).
+  # Empty = escalation is logged but never pinged. One ping per node per 24h.
+  escalation_discord_channel: ""
+  # Conversation starter: Xen opening a thread unprompted. Off by default.
+  starter_enabled: false
+  starter_idle_hours: 4
+  starter_max_per_day: 1
+  # Quiet hours in the container's LOCAL time (TZ env). The starter warns
+  # loudly if /etc/timezone and the effective local zone disagree.
+  starter_quiet_start: "23:00"
+  starter_quiet_end: "07:00"
+  starter_agent_profile: ""
 
 # Outbound sends via the meshtastic_send tool.
 send:

@@ -1,15 +1,23 @@
-"""Persistent Meshtastic chat bridge.
+"""Persistent Meshtastic chat bridge - three-filter rewrite.
 
-A background listener holds a TCP connection to the configured node/proxy, catches
-inbound text messages, routes allowed DMs into an Agent Zero context, and sends the
-reply back over the mesh. Modeled on the Discord bridge but scoped to the radio.
+Pipeline order is fixed by the architecture (spec 4/6):
 
-Security: only node IDs in bridge.allowed_nodes can drive the agent. Inbound text is
-treated as untrusted content. Rate limits and length caps are enforced.
+  inbound packet
+    -> DUMB FILTER   self-drop, hard banlist, evidence log, addressing gate
+    -> SMART FILTER  triage (T1), escalation (T2/T3/T4), soft banlist reply-gate
+    -> agent turn    (only if the smart filter did not refuse)
+    -> EGRESS FILTER single chokepoint for every outbound byte (egress.send)
+
+The dumb filter runs before any model and cannot be argued with; the smart
+filter is Xen's judgment; the egress filter is the last mechanical veto and can
+only ever say no. Veto precedence is egress > hard ban > Xen's discretion, which
+is the reverse of execution order on purpose.
+
+Security: only allowlisted nodes drive a trusted DM turn; everything else runs
+sandboxed. Inbound text is untrusted. All outbound goes through egress.send.
 """
 import asyncio
 import collections
-import json
 import logging
 import os
 import re
@@ -26,19 +34,13 @@ _thread = None
 _loop = None
 _iface = None
 _recent = collections.deque(maxlen=100)
-_rate = {}          # node_id -> deque[monotonic]
-_contexts = {}      # node_id -> context_id
+_contexts = {}
 _node_locks = {}
 
 _INVISIBLE = re.compile(r"[\u200b-\u200f\u2060-\u2064\ufeff\u00ad]+")
 
-# Outbound messages this node has sent, remembered so an inbound packet can be
-# recognised as a reply to one of them. The ledger lives in gatekeeper so the
-# gate and the listener share exactly one store; it survives a restart.
 _SENT_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sent-log.jsonl")
 _ledger = None
-
-# Our own long name, used to build the literal @mention tokens.
 _SELF_LONG_NAME = "xenmesh"
 
 
@@ -47,9 +49,18 @@ def _sent_log_path():
 
 
 def _gate():
-    """Lazy accessor for the dumb gate module (avoids an import cycle at load)."""
     from usr.plugins.meshtastic_a0.helpers import gatekeeper
     return gatekeeper
+
+
+def _banlists():
+    from usr.plugins.meshtastic_a0.helpers import banlists
+    return banlists
+
+
+def _egress():
+    from usr.plugins.meshtastic_a0.helpers import egress
+    return egress
 
 
 def _ledger_instance():
@@ -60,7 +71,6 @@ def _ledger_instance():
 
 
 def _remember_sent(msg_id, channel):
-    """Record an outbound message id so a later reply to it can be detected."""
     try:
         _ledger_instance().add(msg_id, channel)
     except Exception:
@@ -68,19 +78,24 @@ def _remember_sent(msg_id, channel):
 
 
 def _mention_tokens(bridge):
-    """Literal @tokens that count as addressing this node on public airtime."""
     return _gate().mention_tokens(bridge.get("self_node_id", ""), _SELF_LONG_NAME)
 
 
 def _sanitize(text, limit=500):
     text = _INVISIBLE.sub("", str(text or ""))
-    text = re.sub(r"<[^>]{0,200}>", " ", text)  # strip angle-bracket tags
+    text = re.sub(r"<[^>]{0,200}>", " ", text)
     return text.strip()[:limit]
 
 
 def get_status():
     with _state_lock:
-        return dict(_bridge)
+        status = dict(_bridge)
+    try:
+        from usr.plugins.meshtastic_a0.helpers import starter
+        status["starter"] = starter.get_status()
+    except Exception:
+        pass
+    return status
 
 
 def get_recent(limit=20):
@@ -100,25 +115,12 @@ def _allowed(node_id, allowed):
     return str(node_id) in {str(a) for a in allowed}
 
 
-def _rate_ok(node_id, max_n, window):
-    now = time.monotonic()
-    dq = _rate.setdefault(str(node_id), collections.deque())
-    while dq and now - dq[0] > window:
-        dq.popleft()
-    if len(dq) >= max_n:
-        return False
-    dq.append(now)
-    return True
-
-
 def _get_context(node_id, name, config, trusted=False):
     from agent import AgentContext, AgentContextType
     from initialize import initialize_agent
     from helpers import persist_chat
 
     bridge = config["bridge"]
-    # Cache contexts per trust class so a node's trusted-DM persona and the
-    # public broadcast persona never bleed into each other.
     key = f"{node_id}:{'dm' if trusted else 'bc'}"
     context = AgentContext.get(_contexts.get(key, ""))
     if context is None:
@@ -145,8 +147,7 @@ def _get_context(node_id, name, config, trusted=False):
 async def _run_agent(context, sender_name, text, config):
     from agent import UserMessage
     from helpers import persist_chat
-
-    safe = _sanitize(text, 200)  # locked to the Meshtastic protocol cap
+    safe = _sanitize(text, 200)
     visible = f"[Meshtastic {sender_name}] {safe}"
     task = context.communicate(UserMessage(message=visible))
     response = await task.result()
@@ -154,86 +155,37 @@ async def _run_agent(context, sender_name, text, config):
     return response
 
 
-# If the sandboxed persona has nothing to say it should answer with exactly this
-# token, and the bridge transmits nothing. Gives the public persona a real
-# option other than "say something", without relying on it being polite.
-SILENCE_TOKEN = "SILENT"
+def _deliver(config, dest, reply, channel, kind, inbound_text):
+    """Single outbound path: hand the model's reply to the egress chokepoint.
 
-# Belt and braces: a model that decides not to reply sometimes narrates that
-# decision instead of staying quiet, and the narration then goes out over shared
-# airtime ("No mesh reply sent: ... staying silent to save airtime."). That is
-# still a transmission. Anything reading as a refusal-to-reply is dropped.
-_META_REFUSAL = re.compile(
-    r"(no\s+mesh\s+reply|not\s+addressed\s+to\s+me|staying\s+(silent|quiet)|"
-    r"(will|would)\s+(stay|remain)\s+(silent|quiet)|no\s+reply\s+(sent|needed|required)|"
-    r"(staying|remaining)\s+silent|save\s+airtime|not\s+responding)",
-    re.IGNORECASE,
-)
-
-
-def _is_silence(text):
-    stripped = str(text or "").strip()
-    if not stripped:
-        return True
-    if stripped.strip(".*! ").upper() == SILENCE_TOKEN:
-        return True
-    # Only treat a meta-refusal as silence when the message is essentially just
-    # that narration, so a real answer that mentions airtime still goes through.
-    if len(stripped) <= 200 and _META_REFUSAL.search(stripped):
-        return True
-    return False
-
-
-def _send_reply(config, dest, text, channel=0):
-    from usr.plugins.meshtastic_a0.helpers import radio
-    from usr.plugins.meshtastic_a0.helpers.radio import clamp_bytes
-    conn = config["connection"]
-    # Mesh is shared, low-bandwidth airspace: hard 200-byte cap on every reply.
-    text = clamp_bytes(_sanitize(text, 400), radio.MAX_MESSAGE_BYTES)
-    if not text:
-        return
-    msg_id = radio.send_text(conn["host"], conn["port"], dest, text)
-    _remember_sent(msg_id, channel)
-
-
-def _send_broadcast_reply(config, channel, text):
-    from usr.plugins.meshtastic_a0.helpers import radio
-    from usr.plugins.meshtastic_a0.helpers.radio import clamp_bytes
-    conn = config["connection"]
-    # Public reply to the channel (^all), same hard 200-byte cap.
-    text = clamp_bytes(_sanitize(text, 400), radio.MAX_MESSAGE_BYTES)
-    if not text:
-        return
-    msg_id = radio.send_broadcast(conn["host"], conn["port"], text, channel)
-    _remember_sent(msg_id, channel)
-
-
-def _process_message(config, frm, name, text, trusted=False, reply_mode="dm", reply_channel=0):
-    """Run one agent turn and deliver the reply. Runs in a worker thread.
-
-    reply_mode == "broadcast" sends the reply back to the public channel
-    (used for any broadcast, even from an allowlisted node); otherwise it DMs
-    the sender.
+    egress.send enforces clamp, silence token, meta-refusal, dedupe, templated
+    phrasing, tapback/test-reflex shapes and the global rate limit, then calls
+    radio. Returns (sent: bool, reason).
     """
+    try:
+        msg_id, reason = _egress().send(config, dest, reply, channel=channel,
+                                        kind=kind, inbound_text=inbound_text)
+    except Exception as exc:  # fail closed
+        logger.exception("Meshtastic egress send failed")
+        return False, f"egress-exception:{type(exc).__name__}"
+    if msg_id:
+        _remember_sent(msg_id, channel)
+        return True, reason
+    logger.info("Meshtastic outbound dropped (%s): %s", kind, reason)
+    return False, reason
+
+
+def _process_message(config, frm, name, text, trusted, reply_mode, reply_channel):
     lock = _node_locks.setdefault(frm, threading.Lock())
     if not lock.acquire(blocking=False):
-        return  # a turn for this node is already running
+        return
     try:
         context = _get_context(frm, name, config, trusted)
         fut = asyncio.run_coroutine_threadsafe(_run_agent(context, name or frm, text, config), _loop)
         reply = fut.result(timeout=300)
-        # The persona is allowed to decline, in either direction; if it does,
-        # nothing is transmitted. This guard used to be broadcast-only, so a
-        # trusted DM whose turn answered SILENT transmitted the literal word
-        # "SILENT" over the air - worse than silence and worse than a reply.
-        # One contract, both modes: SILENT means send nothing.
-        if _is_silence(reply):
-            logger.info("Meshtastic %s turn declined as silent (%s)", reply_mode, frm)
-            return
-        if reply_mode == "broadcast":
-            _send_broadcast_reply(config, reply_channel, reply or "")
-        else:
-            _send_reply(config, frm, reply or "", reply_channel)
+        kind = "broadcast" if reply_mode == "broadcast" else "dm"
+        dest = "" if reply_mode == "broadcast" else frm
+        _deliver(config, dest, reply or "", reply_channel, kind, text)
     except Exception as exc:
         logger.exception("Meshtastic bridge processing failed")
         with _state_lock:
@@ -265,39 +217,36 @@ def _handle_packet(packet, interface, config):
             name = (node.get("user", {}) or {}).get("longName", "")
         except Exception:
             pass
-        _record(frm, name, _sanitize(text, 200), "dm" if is_dm else "broadcast", channel)
 
-        # Evidence store + live triage happen before the block check, so a
-        # message from a node we refuse to answer is still recorded and scored.
-        try:
-            from usr.plugins.meshtastic_a0.helpers import blocklist
-            blocklist.log_inbound(frm, name, text, "dm" if is_dm else "broadcast", channel)
-            blocklist.flag_from_message(frm, name, text)
-        except Exception:
-            logger.exception("Meshtastic inbound triage failed")
-
-        # HARD BLOCK: a blocked node gets no model turn and no reply, in either
-        # direction. Enforced here, in code, before any model runs - it does not
-        # depend on the model deciding to be polite about it.
-        try:
-            from usr.plugins.meshtastic_a0.helpers import blocklist
-            if blocklist.is_blocked(frm):
-                logger.info("Meshtastic blocked node ignored (%s)", frm)
-                return
-        except Exception:
-            logger.exception("Meshtastic blocklist check failed")
-
-        # Our own packets echo back at us (rebroadcasts, local enqueues). Never
-        # let one of those drive a turn: that is a feedback loop waiting to fire.
+        # ---- DUMB FILTER (pre-model, cannot be argued with) ----
+        # self-drop first: our own echoes must never drive a turn.
         try:
             if _gate().is_self(frm, my_id_str):
                 return
         except Exception:
             pass
 
-        # Trust classes: a DM from an allowlisted node is the operator talking
-        # to the agent (full profile + tools). Anything else that reaches the
-        # agent is public broadcast traffic and runs sandboxed.
+        # hard banlist: text never enters inference, never pings Jesse.
+        try:
+            if _banlists().hard_is_blocked(frm):
+                logger.info("Meshtastic hard-banned node dropped (%s)", frm)
+                return
+        except Exception:
+            logger.exception("Meshtastic hard banlist check failed")
+
+        # evidence log (inside the gate): everything not self / hard-banned.
+        _record(frm, name, _sanitize(text, 200), "dm" if is_dm else "broadcast", channel)
+        try:
+            from usr.plugins.meshtastic_a0.helpers import starter
+            starter.note_activity()
+        except Exception:
+            pass
+        try:
+            _banlists().log_inbound(frm, name, text, "dm" if is_dm else "broadcast", channel)
+        except Exception:
+            logger.exception("Meshtastic inbound log failed")
+
+        # addressing gate for public airtime; allowlist for DMs.
         if is_dm:
             if not _allowed(frm, bridge.get("allowed_nodes", [])):
                 logger.info("Meshtastic ignored DM from unlisted node %s", frm)
@@ -305,15 +254,6 @@ def _handle_packet(packet, interface, config):
             trusted = True
             reply_mode, reply_channel = "dm", channel
         elif is_broadcast and bridge.get("respond_to_broadcasts", False):
-            # Public airspace even when the sender is an allowlisted node: always
-            # the sandboxed broadcast profile, and the reply goes back to the
-            # channel (^all), not as a DM to the sender.
-            #
-            # HARD GATE: one dumb listener decides, in one place, and returns a
-            # reason we can log. On shared airtime we transmit only when the
-            # message names this node (@xenmesh / @!b4c5d7fa) or replies to a
-            # packet this node actually sent. Everything else is recorded and
-            # dropped. Silence is the default on public channels.
             rid = (decoded or {}).get("replyId") or (decoded or {}).get("reply_id")
             allowed, reason = _gate().evaluate(text, rid, channel,
                                                _mention_tokens(bridge),
@@ -325,10 +265,35 @@ def _handle_packet(packet, interface, config):
             reply_mode, reply_channel = "broadcast", channel
         else:
             return
-        if not _rate_ok(frm, bridge.get("rate_limit_max", 6), bridge.get("rate_limit_window", 120)):
-            logger.info("Meshtastic rate-limited node %s", frm)
-            return
-        threading.Thread(target=_process_message, args=(config, frm, name, text, trusted, reply_mode, reply_channel),
+
+        # ---- SMART FILTER (Xen's judgment + escalation) ----
+        # T1 triage writes a soft offence; escalation handles T2/T3/T4 and the
+        # Discord ping. Both are bridge code, never the persona.
+        t1_hit = None
+        try:
+            t1_hit = _banlists().triage_live(frm, name, text)
+        except Exception:
+            logger.exception("Meshtastic triage failed")
+        try:
+            from usr.plugins.meshtastic_a0.helpers import escalation
+            refuse, info = escalation.handle(config, frm, name, text, t1_hit)
+            if refuse:
+                logger.info("Meshtastic smart-filter refused (%s): %s", frm, info)
+                return
+        except Exception:
+            logger.exception("Meshtastic escalation failed")
+
+        # soft banlist reply-gate: a soft-banned node still reached the model
+        # path above for triage, but gets no reply.
+        try:
+            if _banlists().soft_is_banned(frm):
+                logger.info("Meshtastic soft-banned node, no reply (%s)", frm)
+                return
+        except Exception:
+            logger.exception("Meshtastic soft banlist check failed")
+
+        threading.Thread(target=_process_message,
+                         args=(config, frm, name, text, trusted, reply_mode, reply_channel),
                          daemon=True, name=f"meshtastic-turn-{frm}").start()
     except Exception:
         logger.exception("Meshtastic bridge packet handler error")
@@ -338,6 +303,11 @@ def _listen_loop(host, port, config):
     global _iface, _loop
     from usr.plugins.meshtastic_a0.helpers.radio import NoHeartbeatTCPInterface
     from pubsub import pub
+    from usr.plugins.meshtastic_a0.helpers import egress
+
+    # configure the egress rate limiter from plugin config at the chokepoint.
+    b = config.get("bridge", {})
+    egress.configure(b.get("rate_limit_max", 3), b.get("rate_limit_window", 120))
 
     loop = asyncio.new_event_loop()
     _loop = loop
@@ -355,12 +325,22 @@ def _listen_loop(host, port, config):
                             "host": host, "port": port,
                             "node": getattr(_iface, "owner", "") or ""})
         logger.info("Meshtastic bridge connected to %s:%s", host, port)
-        loop.run_forever()  # run_coroutine_threadsafe targets this loop
+        try:
+            from usr.plugins.meshtastic_a0.helpers import starter
+            starter.start(config)
+        except Exception:
+            logger.exception("Meshtastic starter start failed")
+        loop.run_forever()
     except Exception as exc:
         logger.exception("Meshtastic bridge listener failed")
         with _state_lock:
             _bridge.update({"running": False, "status": "error", "last_error": f"{type(exc).__name__}: {exc}"})
     finally:
+        try:
+            from usr.plugins.meshtastic_a0.helpers import starter
+            starter.stop()
+        except Exception:
+            pass
         if subscribed:
             try:
                 pub.unsubscribe(handler, "meshtastic.receive")
@@ -414,7 +394,6 @@ def stop_bridge():
 
 
 async def sync_bridge(config):
-    """Auto-start on boot if configured and not already running."""
     bridge = config.get("bridge", {})
     if bridge.get("auto_start") and config["connection"].get("host") and not _bridge["running"]:
         try:

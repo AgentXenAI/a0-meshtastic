@@ -21,6 +21,13 @@
       if (!Array.isArray(config.bridge.broadcast_allowed_tools)) config.bridge.broadcast_allowed_tools = ['search_engine'];
       if (config.bridge.rate_limit_max === undefined) config.bridge.rate_limit_max = 3;
       if (config.bridge.rate_limit_window === undefined) config.bridge.rate_limit_window = 120;
+      if (config.bridge.escalation_discord_channel === undefined) config.bridge.escalation_discord_channel = '';
+      if (config.bridge.starter_enabled === undefined) config.bridge.starter_enabled = false;
+      if (config.bridge.starter_idle_hours === undefined) config.bridge.starter_idle_hours = 4;
+      if (config.bridge.starter_max_per_day === undefined) config.bridge.starter_max_per_day = 1;
+      if (config.bridge.starter_quiet_start === undefined) config.bridge.starter_quiet_start = '23:00';
+      if (config.bridge.starter_quiet_end === undefined) config.bridge.starter_quiet_end = '07:00';
+      if (config.bridge.starter_agent_profile === undefined) config.bridge.starter_agent_profile = '';
       if (config.send.allow_broadcast === undefined) config.send.allow_broadcast = false;
       if (config.send.broadcast_channel === undefined) config.send.broadcast_channel = 0;
     ">
@@ -108,13 +115,59 @@
 
       <div class="field">
         <div class="field-label"><div class="field-title">Rate limit</div>
-          <div class="field-description">Max messages per node within the window (seconds).</div></div>
+          <div class="field-description">Global max messages within the window (seconds). Enforced at the outbound egress chokepoint, so no caller can bypass it.</div></div>
         <div class="field-control" style="display:flex;gap:0.5em;">
           <input type="number" min="1" x-model.number="config.bridge.rate_limit_max" style="width:6em;" />
           <span>/</span>
           <input type="number" min="1" x-model.number="config.bridge.rate_limit_window" style="width:7em;" />
           <span class="field-description">sec</span>
         </div>
+      </div>
+
+      <div class="section-title" style="margin-top:1.2em;">Escalation</div>
+      <div class="section-description">Bridge code owns escalation, never the persona. T1 (hostility) and T4 (repeat from a soft-banned node) never ping. T2 (prompt injection) and T3 (PII / attack-surface probing) ping once per node per 24h. Nothing is ever auto-hard-banned.</div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Escalation Discord channel</div>
+          <div class="field-description">Channel ID that receives T2/T3 pings. Empty = escalation is logged only, never pinged.</div></div>
+        <div class="field-control"><input type="text" x-model="config.bridge.escalation_discord_channel" placeholder="123456789012345678" /></div>
+      </div>
+
+      <div class="section-title" style="margin-top:1.2em;">Conversation starter</div>
+      <div class="section-description">The only path where Xen speaks first. Fires after the idle window, never in quiet hours, capped per day, and the generated text still passes the full outbound egress filter.</div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Enable starter</div>
+          <div class="field-description">Off by default. When on, Xen opens a thread on the mesh unprompted.</div></div>
+        <div class="field-control"><label class="toggle"><input type="checkbox" x-model="config.bridge.starter_enabled" /><span class="toggler"></span></label></div>
+      </div>
+
+      <div class="field" x-show="config.bridge.starter_enabled" x-transition>
+        <div class="field-label"><div class="field-title">Idle hours before firing</div>
+          <div class="field-description">Hours with no inbound mesh traffic before the starter may fire.</div></div>
+        <div class="field-control"><input type="number" min="1" max="72" x-model.number="config.bridge.starter_idle_hours" style="width:6em;" /></div>
+      </div>
+
+      <div class="field" x-show="config.bridge.starter_enabled" x-transition>
+        <div class="field-label"><div class="field-title">Max per day</div>
+          <div class="field-description">Hard cap on starter messages per local day.</div></div>
+        <div class="field-control"><input type="number" min="1" max="5" x-model.number="config.bridge.starter_max_per_day" style="width:6em;" /></div>
+      </div>
+
+      <div class="field" x-show="config.bridge.starter_enabled" x-transition>
+        <div class="field-label"><div class="field-title">Quiet hours (local)</div>
+          <div class="field-description">No starter between these times, container local time. The bridge logs a loud warning if /etc/timezone and the effective TZ disagree.</div></div>
+        <div class="field-control" style="display:flex;gap:0.5em;">
+          <input type="text" x-model="config.bridge.starter_quiet_start" style="width:6em;" placeholder="23:00" />
+          <span class="field-description">to</span>
+          <input type="text" x-model="config.bridge.starter_quiet_end" style="width:6em;" placeholder="07:00" />
+        </div>
+      </div>
+
+      <div class="field" x-show="config.bridge.starter_enabled" x-transition>
+        <div class="field-label"><div class="field-title">Starter profile</div>
+          <div class="field-description">Agent profile used to generate the opener. Empty falls back to the default profile.</div></div>
+        <div class="field-control"><input type="text" x-model="config.bridge.starter_agent_profile" placeholder="mesh-xen" /></div>
       </div>
 
       <div class="section-title" style="margin-top:1.2em;">Outbound sends</div>

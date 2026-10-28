@@ -3,3 +3,10 @@ data/
 __pycache__/
 *.pyc
 .toggle-*
+
+# runtime state (banlists, inbound log, ledger, plugin config)
+banlists.json
+inbound-log.jsonl
+data/
+config.json
+config.json.bak*

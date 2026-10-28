@@ -1,15 +1,17 @@
 import asyncio
+from copy import deepcopy
 from helpers.tool import Tool, Response
 from usr.plugins.meshtastic_a0.helpers.config import get_meshtastic_config
-from usr.plugins.meshtastic_a0.helpers import radio
-from usr.plugins.meshtastic_a0.helpers.radio import clamp_bytes, MAX_MESSAGE_BYTES
+from usr.plugins.meshtastic_a0.helpers import radio, egress
 
 
 class MeshtasticSend(Tool):
     """Send a DM or broadcast over the configured Meshtastic node/proxy.
 
-    Meshtastic enforces a hard 200-BYTE payload limit. The mesh is shared,
-    low-bandwidth airspace, so text is clamped to 200 bytes before sending.
+    Every byte goes through the egress filter (helpers/egress.py): 200-byte
+    clamp, silence/meta-refusal rejection, dedupe, templated-phrasing and
+    tapback/test-reflex rejection, and the global rate limit. There is no
+    bypass - this tool and the bridge reply path share one chokepoint.
     """
 
     async def execute(self, **kwargs) -> Response:
@@ -26,8 +28,9 @@ class MeshtasticSend(Tool):
         if not raw:
             return Response(message="Error: text is required.", break_loop=False)
 
-        text = clamp_bytes(raw)
-        note = "" if text == raw else f" (truncated to {MAX_MESSAGE_BYTES} bytes)"
+        eff = deepcopy(config)
+        eff["connection"]["host"] = host
+        eff["connection"]["port"] = port
 
         try:
             if action == "dm":
@@ -36,15 +39,21 @@ class MeshtasticSend(Tool):
                     return Response(message="Error: dest is required for a DM (node id or name).", break_loop=False)
                 dest_id = await asyncio.to_thread(radio.resolve_node, host, port, dest)
                 channel = self.args.get("channel")
-                await asyncio.to_thread(radio.send_text, host, port, dest_id, text,
-                                        int(channel) if channel is not None else None)
-                return Response(message=f"Sent DM to {dest_id} via {host}:{port}{note}.", break_loop=False)
+                msg_id, reason = await asyncio.to_thread(
+                    egress.send, eff, dest_id, raw,
+                    channel=int(channel) if channel is not None else 0, kind="dm")
+                if msg_id:
+                    return Response(message=f"Sent DM to {dest_id} via {host}:{port}.", break_loop=False)
+                return Response(message=f"Not sent (egress: {reason}).", break_loop=False)
             elif action == "broadcast":
                 if not send_cfg.get("allow_broadcast", False):
                     return Response(message="Error: broadcasts are disabled. Enable send.allow_broadcast in Config (spam risk on a live mesh).", break_loop=False)
                 channel = self.args.get("channel", send_cfg.get("broadcast_channel", 0))
-                await asyncio.to_thread(radio.send_broadcast, host, port, text, int(channel))
-                return Response(message=f"Broadcast sent on channel {channel} via {host}:{port}{note}.", break_loop=False)
+                msg_id, reason = await asyncio.to_thread(
+                    egress.send, eff, "", raw, channel=int(channel), kind="broadcast")
+                if msg_id:
+                    return Response(message=f"Broadcast sent on channel {channel} via {host}:{port}.", break_loop=False)
+                return Response(message=f"Not sent (egress: {reason}).", break_loop=False)
             else:
                 return Response(message=f"Unknown action '{action}'. Use 'dm' or 'broadcast'.", break_loop=False)
         except ValueError as exc:
