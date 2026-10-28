@@ -386,6 +386,13 @@ def _firefly_poll_loop(config):
     loop = asyncio.new_event_loop()
     _loop = loop
     asyncio.set_event_loop(loop)
+    # The poll loop below owns this thread, so the event loop that
+    # _process_message submits agent turns to must be driven separately.
+    # Without this the coroutine is scheduled onto a loop that never runs and
+    # every turn dies on fut.result(timeout=300) with TimeoutError.
+    loop_thread = threading.Thread(target=loop.run_forever, daemon=True,
+                                   name="meshtastic-firefly-loop")
+    loop_thread.start()
 
     conn = config["connection"]
     poll_seconds = int((conn.get("firefly", {}) or {}).get("poll_seconds", 3))
@@ -492,6 +499,11 @@ def _firefly_poll_loop(config):
             _bridge["running"] = False
             if _bridge["status"] != "error":
                 _bridge["status"] = "stopped"
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+            loop_thread.join(timeout=5)
+        except Exception:
+            pass
         try:
             loop.close()
         except Exception:
