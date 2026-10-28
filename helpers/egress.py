@@ -187,29 +187,45 @@ def _remember(text):
 
 
 def send(config, dest, text, channel=0, kind="broadcast", inbound_text=None):
-    """The single outbound chokepoint. Returns the on-wire packet id or None.
+    """The single outbound chokepoint. Returns (ok: bool, reason: str, msg_id).
 
     kind: "dm" | "broadcast" | "starter". dest ignored for broadcast/starter.
-    Enforces every check then delegates to radio. Fail closed.
+    Enforces every check then delegates to the configured transport. Fail closed.
+
+    msg_id is the on-wire packet id when the transport reports one (TCP). The
+    Firefly HTTP API does not, so it returns None there and the reply ledger is
+    fed instead from the poll loop observing our own direction="sent" rows.
     """
     try:
         allowed, reason = check(text, kind=kind, inbound_text=inbound_text)
         if not allowed:
-            return None, reason
+            return False, reason, None
         # 7. rate limit at the chokepoint.
         if not _rate_ok():
-            return None, "rate-limited"
-        from usr.plugins.meshtastic_a0.helpers import radio
+            return False, "rate-limited", None
         conn = config["connection"]
         payload = clamp_bytes(text)
         if not payload:
-            return None, "empty-after-clamp"
+            return False, "empty-after-clamp", None
+        if str(conn.get("transport", "tcp")).lower() == "firefly":
+            from usr.plugins.meshtastic_a0.helpers import firefly as ff
+            client = ff.get_client(conn)
+            ch_index = (conn.get("firefly", {}) or {}).get("channel_index", 0)
+            dest_num = None
+            if kind == "dm":
+                dest_num = ff.node_id_to_num(dest)
+                if not dest_num:
+                    return False, f"bad-dest:{dest}", None
+            client.send(payload, dest_num=dest_num, channel_index=ch_index)
+            _remember(payload)
+            return True, "sent", None
+        from usr.plugins.meshtastic_a0.helpers import radio
         if kind in ("broadcast", "starter"):
             ch = config.get("send", {}).get("broadcast_channel", channel) or channel
             msg_id = radio.send_broadcast(conn["host"], conn["port"], payload, ch)
         else:
             msg_id = radio.send_text(conn["host"], conn["port"], dest, payload)
         _remember(payload)
-        return msg_id, "sent"
+        return True, "sent", msg_id
     except Exception as exc:  # fail closed - nothing transmitted
-        return None, f"send-error:{type(exc).__name__}"
+        return False, f"send-error:{type(exc).__name__}", None

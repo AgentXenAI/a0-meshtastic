@@ -22,6 +22,35 @@ class MeshtasticRead(Tool):
             lines = [f"{r['ts']} [{r['kind']} ch{r['channel']}] {r['name'] or r['from']}: {r['text']}" for r in rows]
             return Response(message="Recent inbound mesh messages (untrusted):\n" + "\n".join(lines), break_loop=False)
 
+        transport = str(conn.get("transport", "tcp") or "tcp").strip().lower()
+
+        if transport == "firefly":
+            from usr.plugins.meshtastic_a0.helpers import firefly as ff
+            if not str((conn.get("firefly", {}) or {}).get("base_url", "")).strip():
+                return Response(message="Error: connection.firefly.base_url is not configured.", break_loop=False)
+            try:
+                client = await asyncio.to_thread(ff.get_client, conn)
+                if action == "info":
+                    health = await asyncio.to_thread(client.health)
+                    return Response(message=(f"Transport: Firefly UDP virtual node\n"
+                                             f"Node: {client.long_name or '(unnamed)'} ({client.node_id})\n"
+                                             f"Short: {client.short_name}\n"
+                                             f"Base URL: {client.base_url}\n"
+                                             f"Profile: {client.profile_id}\n"
+                                             f"Health: {health.get('status')} "
+                                             f"(messages={health.get('messages')})"), break_loop=False)
+                if action == "nodes":
+                    rows = await asyncio.to_thread(client.nodes, limit)
+                    if not rows:
+                        return Response(message="No nodes returned.", break_loop=False)
+                    lines = [f"{r['id']}  {r['name'] or '(unnamed)'}  [{r['role']}/{r['hw']}]  "
+                             f"lastHeard={r['last_heard']}  hops={r['hops']}" for r in rows]
+                    return Response(message=f"{len(rows)} mesh node(s) via Firefly {client.base_url}:\n"
+                                            + "\n".join(lines), break_loop=False)
+                return Response(message=f"Unknown action '{action}'. Use nodes, info, or recent.", break_loop=False)
+            except Exception as exc:
+                return Response(message=f"Error reading Firefly: {type(exc).__name__}: {exc}", break_loop=False)
+
         if not host:
             return Response(message="Error: no Meshtastic host configured. Set connection.host in Config.", break_loop=False)
 

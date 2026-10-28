@@ -6,10 +6,25 @@
 connection:
   # Human label for this node/connection.
   name: "My Node"
+  # Radio transport: "tcp" (Meshtastic TCP API on a node or Meshmonitor proxy)
+  # or "firefly" (a Firefly UDP virtual node reached over its HTTP API).
+  transport: tcp
   # Hostname or IP of the node/proxy exposing the Meshtastic TCP API.
   # Leave empty until set in Config; the bridge will not start without it.
   host: ""
   port: 4403
+  # Firefly transport settings (used only when transport is "firefly").
+  # Firefly runs as the zz-firefly container on the xenai host with
+  # network_mode: host; web UI on :5011. Auth is session-cookie login, there is
+  # no API token, so the bridge logs in with a real account.
+  firefly:
+    base_url: ""
+    username: ""
+    password: ""
+    # Profile id from /api/profiles. Empty = auto-select if exactly one exists.
+    profile_id: ""
+    # How often to poll /api/messages for new inbound traffic.
+    poll_seconds: 3
 
 # Inbound chat bridge: mesh DMs -> Agent Zero -> reply back over the mesh.
 bridge:

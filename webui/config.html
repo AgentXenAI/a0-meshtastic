@@ -10,6 +10,12 @@
       if (config.connection.name === undefined) config.connection.name = 'Meshtastic';
       if (config.connection.host === undefined) config.connection.host = '';
       if (config.connection.port === undefined) config.connection.port = 4403;
+      if (config.connection.transport === undefined) config.connection.transport = 'tcp';
+      config.connection.firefly = config.connection.firefly || {};
+      ['base_url','username','password','profile_id'].forEach(function(k){
+        if (config.connection.firefly[k] === undefined) config.connection.firefly[k] = '';
+      });
+      if (config.connection.firefly.poll_seconds === undefined) config.connection.firefly.poll_seconds = 3;
       if (config.bridge.auto_start === undefined) config.bridge.auto_start = false;
       if (!Array.isArray(config.bridge.allowed_nodes)) config.bridge.allowed_nodes = [];
       if (config.bridge.respond_to_broadcasts === undefined) config.bridge.respond_to_broadcasts = false;
@@ -41,6 +47,17 @@
       </div>
 
       <div class="field">
+        <div class="field-label"><div class="field-title">Transport</div>
+          <div class="field-description">"tcp" talks to a node/proxy over the Meshtastic TCP API. "firefly" uses a Firefly UDP virtual node over its HTTP API.</div></div>
+        <div class="field-control">
+          <select x-model="config.connection.transport">
+            <option value="tcp">tcp</option>
+            <option value="firefly">firefly</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field" x-show="config.connection.transport !== 'firefly'">
         <div class="field-label"><div class="field-title">Host</div>
           <div class="field-description">Hostname/IP of the node exposing the Meshtastic TCP API. Leave empty to disable.</div></div>
         <div class="field-control"><input type="text" x-model="config.connection.host" placeholder="node.local" /></div>
@@ -50,6 +67,39 @@
         <div class="field-label"><div class="field-title">Port</div>
           <div class="field-description">Meshtastic TCP API port (default 4403).</div></div>
         <div class="field-control"><input type="number" min="1" max="65535" x-model.number="config.connection.port" /></div>
+      </div>
+
+      <div class="section-title" x-show="config.connection.transport === 'firefly'">Firefly UDP virtual node</div>
+      <div class="section-description" x-show="config.connection.transport === 'firefly'">Firefly runs on the host as zz-firefly (network_mode: host) and bridges UDP multicast to LoRa via GOBLIN RX. Auth is a session login; there is no API token.</div>
+
+      <div class="field" x-show="config.connection.transport === 'firefly'">
+        <div class="field-label"><div class="field-title">Firefly base URL</div>
+          <div class="field-description">For example http://10.7.0.44:5011</div></div>
+        <div class="field-control"><input type="text" x-model="config.connection.firefly.base_url" placeholder="http://10.7.0.44:5011" /></div>
+      </div>
+
+      <div class="field" x-show="config.connection.transport === 'firefly'">
+        <div class="field-label"><div class="field-title">Firefly username</div>
+          <div class="field-description">Account the bridge logs in as.</div></div>
+        <div class="field-control"><input type="text" x-model="config.connection.firefly.username" /></div>
+      </div>
+
+      <div class="field" x-show="config.connection.transport === 'firefly'">
+        <div class="field-label"><div class="field-title">Firefly password</div>
+          <div class="field-description">Stored in plugin config; overridable with FIREFLY_PASSWORD.</div></div>
+        <div class="field-control"><input type="password" x-model="config.connection.firefly.password" /></div>
+      </div>
+
+      <div class="field" x-show="config.connection.transport === 'firefly'">
+        <div class="field-label"><div class="field-title">Profile id</div>
+          <div class="field-description">From /api/profiles. Empty auto-selects when exactly one profile exists.</div></div>
+        <div class="field-control"><input type="text" x-model="config.connection.firefly.profile_id" /></div>
+      </div>
+
+      <div class="field" x-show="config.connection.transport === 'firefly'">
+        <div class="field-label"><div class="field-title">Poll interval (seconds)</div>
+          <div class="field-description">How often to poll /api/messages for new inbound traffic.</div></div>
+        <div class="field-control"><input type="number" min="1" max="120" x-model.number="config.connection.firefly.poll_seconds" /></div>
       </div>
 
       <div class="section-title" style="margin-top:1.2em;">Chat bridge</div>

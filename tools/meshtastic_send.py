@@ -32,27 +32,52 @@ class MeshtasticSend(Tool):
         eff["connection"]["host"] = host
         eff["connection"]["port"] = port
 
+        transport = str(conn.get("transport", "tcp") or "tcp").strip().lower()
+
         try:
             if action == "dm":
                 dest = str(self.args.get("dest", "") or "").strip()
                 if not dest:
                     return Response(message="Error: dest is required for a DM (node id or name).", break_loop=False)
+                if transport == "firefly":
+                    from usr.plugins.meshtastic_a0.helpers import firefly as ff
+                    dest_id = dest if dest.startswith("!") else "!" + format(int(dest), "08x") if dest.isdigit() else ""
+                    if not dest_id:
+                        client = await asyncio.to_thread(ff.get_client, eff["connection"])
+                        rows = await asyncio.to_thread(client.nodes, 400)
+                        matches = [r for r in rows if dest.casefold() in (r["name"] or "").casefold()
+                                   or dest.casefold() == (r["short"] or "").casefold()]
+                        if len(matches) == 1:
+                            dest_id = matches[0]["id"]
+                        elif not matches:
+                            return Response(message=f"Error: no Firefly node matches '{dest}'. Use a node id from meshtastic_read.", break_loop=False)
+                        else:
+                            return Response(message=f"Error: '{dest}' is ambiguous; matches: "
+                                                    + ", ".join(m["id"] for m in matches), break_loop=False)
+                    via = eff["connection"].get("firefly", {}).get("base_url", "")
+                    ok, reason, _mid = await asyncio.to_thread(
+                        egress.send, eff, dest_id, raw,
+                        channel=int(self.args.get("channel") or 0), kind="dm")
+                    if ok:
+                        return Response(message=f"Sent DM to {dest_id} via Firefly {via}.", break_loop=False)
+                    return Response(message=f"Not sent (egress: {reason}).", break_loop=False)
                 dest_id = await asyncio.to_thread(radio.resolve_node, host, port, dest)
                 channel = self.args.get("channel")
-                msg_id, reason = await asyncio.to_thread(
+                ok, reason, _mid = await asyncio.to_thread(
                     egress.send, eff, dest_id, raw,
                     channel=int(channel) if channel is not None else 0, kind="dm")
-                if msg_id:
+                if ok:
                     return Response(message=f"Sent DM to {dest_id} via {host}:{port}.", break_loop=False)
                 return Response(message=f"Not sent (egress: {reason}).", break_loop=False)
             elif action == "broadcast":
                 if not send_cfg.get("allow_broadcast", False):
                     return Response(message="Error: broadcasts are disabled. Enable send.allow_broadcast in Config (spam risk on a live mesh).", break_loop=False)
                 channel = self.args.get("channel", send_cfg.get("broadcast_channel", 0))
-                msg_id, reason = await asyncio.to_thread(
+                ok, reason, _mid = await asyncio.to_thread(
                     egress.send, eff, "", raw, channel=int(channel), kind="broadcast")
-                if msg_id:
-                    return Response(message=f"Broadcast sent on channel {channel} via {host}:{port}.", break_loop=False)
+                if ok:
+                    via = eff["connection"].get("firefly", {}).get("base_url", "") if transport == "firefly" else f"{host}:{port}"
+                    return Response(message=f"Broadcast sent on channel {channel} via {via}.", break_loop=False)
                 return Response(message=f"Not sent (egress: {reason}).", break_loop=False)
             else:
                 return Response(message=f"Unknown action '{action}'. Use 'dm' or 'broadcast'.", break_loop=False)

@@ -163,13 +163,16 @@ def _deliver(config, dest, reply, channel, kind, inbound_text):
     radio. Returns (sent: bool, reason).
     """
     try:
-        msg_id, reason = _egress().send(config, dest, reply, channel=channel,
-                                        kind=kind, inbound_text=inbound_text)
+        ok, reason, msg_id = _egress().send(config, dest, reply, channel=channel,
+                                            kind=kind, inbound_text=inbound_text)
     except Exception as exc:  # fail closed
         logger.exception("Meshtastic egress send failed")
         return False, f"egress-exception:{type(exc).__name__}"
-    if msg_id:
-        _remember_sent(msg_id, channel)
+    if ok:
+        # TCP reports an on-wire id immediately; Firefly does not, and its reply
+        # ledger is fed by the poll loop observing our own direction="sent" rows.
+        if msg_id:
+            _remember_sent(msg_id, channel)
         return True, reason
     logger.info("Meshtastic outbound dropped (%s): %s", kind, reason)
     return False, reason
@@ -203,8 +206,8 @@ def _handle_packet(packet, interface, config):
         text = decoded.get("text", "")
         if not text:
             return
-        frm = packet.get("fromId") or ("!" + format(int(packet.get("from", 0)), "08x"))
-        to = packet.get("toId") or ("!" + format(int(packet.get("to", 0)), "08x"))
+        frm = packet.get("fromId") or ("!" + format(int(packet.get("from") or 0), "08x"))
+        to = packet.get("toId") or ("!" + format(int(packet.get("to") or 0), "08x"))
         channel = packet.get("channel", 0)
         bridge = config["bridge"]
         my_id = getattr(getattr(interface, "myInfo", None), "my_node_num", None)
@@ -361,15 +364,155 @@ def _listen_loop(host, port, config):
             pass
 
 
+def _firefly_poll_loop(config):
+    """Inbound reader for the Firefly transport: poll the HTTP API, no pubsub.
+
+    Firefly exposes no streaming endpoint to the bridge, so we poll /api/messages
+    and dedupe on packet_id. The first poll is a baseline: everything already in
+    the database is marked seen and never replayed, so a bridge restart cannot
+    answer yesterday's traffic.
+
+    Our own direction="sent" rows feed the reply ledger. Firefly's send API
+    returns no packet id, so without this a reply-to-mine would never be
+    recognised and the addressing gate would silently lose that path.
+    """
+    global _iface, _loop
+    from usr.plugins.meshtastic_a0.helpers import firefly as ff
+    from usr.plugins.meshtastic_a0.helpers import egress
+
+    b = config.get("bridge", {})
+    egress.configure(b.get("rate_limit_max", 3), b.get("rate_limit_window", 120))
+
+    loop = asyncio.new_event_loop()
+    _loop = loop
+    asyncio.set_event_loop(loop)
+
+    conn = config["connection"]
+    poll_seconds = int((conn.get("firefly", {}) or {}).get("poll_seconds", 3))
+    adapter = ff.FireflyAdapter()
+    _iface = adapter
+    seen = collections.deque(maxlen=2000)
+    seen_set = set()
+    baseline_done = False
+    nodes_refresh = 0.0
+
+    def _mark(packet_id):
+        if packet_id is None or packet_id in seen_set:
+            return False
+        if len(seen) == seen.maxlen:
+            old = seen.popleft()
+            seen_set.discard(old)
+        seen.append(packet_id)
+        seen_set.add(packet_id)
+        return True
+
+    try:
+        client = ff.get_client(conn)
+        adapter.node_id = client.node_id
+        adapter.owner = client.long_name or client.node_id
+        try:
+            adapter.myInfo = ff._SelfInfo(client.node_num) if client.node_num else None
+        except Exception:
+            adapter.myInfo = None
+        with _state_lock:
+            _bridge.update({"running": True, "status": "connected", "last_error": "",
+                            "started_at": datetime.now(timezone.utc).isoformat(),
+                            "host": conn.get("firefly", {}).get("base_url", ""),
+                            "port": conn.get("firefly", {}).get("base_url", ""),
+                            "node": adapter.owner})
+        logger.info("Meshtastic bridge connected to Firefly %s as %s",
+                    conn.get("firefly", {}).get("base_url", ""), client.node_id)
+        try:
+            from usr.plugins.meshtastic_a0.helpers import starter
+            starter.start(config)
+        except Exception:
+            logger.exception("Meshtastic starter start failed")
+
+        while True:
+            if not _bridge.get("running"):
+                break
+            try:
+                channel_rows, dm_rows = client.messages()
+                if time.monotonic() - nodes_refresh > 300:
+                    try:
+                        adapter.nodes = {}
+                        for row in client.nodes(limit=400):
+                            adapter.remember_node(row["id"], row["name"])
+                        nodes_refresh = time.monotonic()
+                    except Exception:
+                        logger.debug("Meshtastic firefly node refresh failed")
+                for row in list(channel_rows) + list(dm_rows):
+                    packet_id = row.get("packet_id")
+                    if packet_id is None:
+                        continue
+                    if not baseline_done:
+                        _mark(packet_id)
+                        continue
+                    if row.get("direction") == "sent":
+                        # our own echo: feed the ledger, never a turn
+                        _mark(packet_id)
+                        _remember_sent(packet_id, row.get("channel", 0))
+                        continue
+                    if not _mark(packet_id):
+                        continue
+                    pkt = ff.row_to_packet(row)
+                    adapter.remember_node(pkt.get("fromId"), row.get("sender_display") or "")
+                    try:
+                        _handle_packet(pkt, adapter, config)
+                    except Exception:
+                        logger.exception("Meshtastic firefly packet dispatch failed")
+                baseline_done = True
+            except ff.FireflyError as exc:
+                logger.warning("Meshtastic firefly poll error: %s", exc)
+                ff.reset_client(conn)
+                with _state_lock:
+                    _bridge["last_error"] = f"firefly: {exc}"
+                try:
+                    client = ff.get_client(conn)
+                except Exception:
+                    time.sleep(min(30, poll_seconds * 5))
+                    continue
+            except Exception as exc:
+                logger.exception("Meshtastic firefly poll loop error")
+                with _state_lock:
+                    _bridge["last_error"] = f"{type(exc).__name__}: {exc}"
+            time.sleep(poll_seconds)
+    except Exception as exc:
+        logger.exception("Meshtastic firefly listener failed")
+        with _state_lock:
+            _bridge.update({"running": False, "status": "error",
+                            "last_error": f"{type(exc).__name__}: {exc}"})
+    finally:
+        try:
+            from usr.plugins.meshtastic_a0.helpers import starter
+            starter.stop()
+        except Exception:
+            pass
+        with _state_lock:
+            _bridge["running"] = False
+            if _bridge["status"] != "error":
+                _bridge["status"] = "stopped"
+        try:
+            loop.close()
+        except Exception:
+            pass
+
+
 def start_bridge(config):
     global _thread
     conn = config["connection"]
-    if not str(conn.get("host", "")).strip():
+    transport = str(conn.get("transport", "tcp") or "tcp").strip().lower()
+    if transport == "firefly":
+        if not str((conn.get("firefly", {}) or {}).get("base_url", "")).strip():
+            raise ValueError("Set connection.firefly.base_url in Config before starting the bridge.")
+    elif not str(conn.get("host", "")).strip():
         raise ValueError("Set a Meshtastic host in Config before starting the bridge.")
     with _state_lock:
         if _bridge["running"]:
             return get_status()
-    _thread = threading.Thread(target=_listen_loop, args=(conn["host"], conn["port"], config),
+    target = _firefly_poll_loop if transport == "firefly" else _listen_loop
+    args = (config,) if transport == "firefly" else (conn["host"], conn["port"], config)
+    _thread = threading.Thread(target=target, args=args,
                                daemon=True, name="meshtastic-a0-bridge")
     _thread.start()
     for _ in range(40):
@@ -395,7 +538,11 @@ def stop_bridge():
 
 async def sync_bridge(config):
     bridge = config.get("bridge", {})
-    if bridge.get("auto_start") and config["connection"].get("host") and not _bridge["running"]:
+    conn = config["connection"]
+    ready = bool(str(conn.get("host", "")).strip()) or \
+        str(conn.get("transport", "tcp")).lower() == "firefly" and \
+        bool(str((conn.get("firefly", {}) or {}).get("base_url", "")).strip())
+    if bridge.get("auto_start") and ready and not _bridge["running"]:
         try:
             await asyncio.to_thread(start_bridge, config)
         except Exception:

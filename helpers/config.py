@@ -27,6 +27,31 @@ def get_meshtastic_config(agent=None):
         conn["port"] = int(conn["port"])
     except (TypeError, ValueError):
         conn["port"] = 4403
+    # Radio transport. "tcp" = Meshtastic TCP API (meshtasticd / Meshmonitor).
+    # "firefly" = Firefly UDP virtual node reached over its HTTP API.
+    conn.setdefault("transport", "tcp")
+    conn["transport"] = str(conn["transport"] or "tcp").strip().lower()
+    if conn["transport"] not in ("tcp", "firefly"):
+        conn["transport"] = "tcp"
+    # Firefly connection settings (only used when transport == "firefly").
+    ff = conn.setdefault("firefly", {})
+    ff.setdefault("base_url", "")
+    ff.setdefault("username", "")
+    ff.setdefault("password", "")
+    ff.setdefault("profile_id", "")
+    ff.setdefault("poll_seconds", 3)
+    try:
+        ff["poll_seconds"] = max(1, int(ff["poll_seconds"]))
+    except (TypeError, ValueError):
+        ff["poll_seconds"] = 3
+    if os.environ.get("FIREFLY_BASE_URL"):
+        ff["base_url"] = os.environ["FIREFLY_BASE_URL"]
+    if os.environ.get("FIREFLY_USERNAME"):
+        ff["username"] = os.environ["FIREFLY_USERNAME"]
+    if os.environ.get("FIREFLY_PASSWORD"):
+        ff["password"] = os.environ["FIREFLY_PASSWORD"]
+    if os.environ.get("FIREFLY_PROFILE_ID"):
+        ff["profile_id"] = os.environ["FIREFLY_PROFILE_ID"]
 
     bridge = config.setdefault("bridge", {})
     bridge.setdefault("auto_start", False)
