@@ -37,7 +37,7 @@ bridge:
   # Safety limits. Meshtastic caps a text payload at 200 BYTES; inbound
   # messages already obey that, so this mirrors the protocol limit.
   max_message_length: 200
-  rate_limit_max: 6
+  rate_limit_max: 3
   rate_limit_window: 120
 
 # Outbound sends via the meshtastic_send tool.

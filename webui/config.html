@@ -19,7 +19,7 @@
       if (config.bridge.dm_agent_profile === undefined) config.bridge.dm_agent_profile = '';
       if (config.bridge.broadcast_agent_profile === undefined) config.bridge.broadcast_agent_profile = '';
       if (!Array.isArray(config.bridge.broadcast_allowed_tools)) config.bridge.broadcast_allowed_tools = ['search_engine'];
-      if (config.bridge.rate_limit_max === undefined) config.bridge.rate_limit_max = 6;
+      if (config.bridge.rate_limit_max === undefined) config.bridge.rate_limit_max = 3;
       if (config.bridge.rate_limit_window === undefined) config.bridge.rate_limit_window = 120;
       if (config.send.allow_broadcast === undefined) config.send.allow_broadcast = false;
       if (config.send.broadcast_channel === undefined) config.send.broadcast_channel = 0;
