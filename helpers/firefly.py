@@ -2,13 +2,13 @@
 
 Firefly (github.com/pdxlocations/firefly) runs a Meshtastic *virtual node* on
 UDP multicast (239.0.0.69:4403) instead of a serial radio, backed by meshdb for
-node discovery. It is deployed on the xenai host as the `zz-firefly` container
-with network_mode: host, web UI on :5011.
+node discovery. A typical deployment is a host-side container with
+network_mode: host and the web UI on :5011.
 
 Why this exists: the serialHal modem path was unreliable, and a bridge-network
 container cannot do multicast at all - so the radio has to be a host-side
-process. Firefly gives us that plus a web UI Jesse can manage, and GOBLIN RX
-(10.7.0.20) rebroadcasts our packets onto LoRa.
+process. Firefly gives us that plus a web UI an operator can manage, and a
+LoRa gateway node rebroadcasts our packets onto the air.
 
 API facts this module depends on (verified against the running container):
   * Auth is session-cookie only. POST /login with form fields username/password

@@ -1,8 +1,8 @@
-"""Two banlists, one file. Hard (Jesse's) and soft (Xen's rap-sheet).
+"""Two banlists, one file. Hard (operator's) and soft (the agent's rap-sheet).
 
 Hard banlist - lives conceptually in the Dumb Filter. Checked before any model
-runs. A hard-banned node's text never enters inference and never pings Jesse.
-Writes are Jesse-only and never automatic; there is no code path that promotes a
+runs. A hard-banned node's text never enters inference and never pings the operator.
+Writes are operator-only and never automatic; there is no code path that promotes a
 node to hard on its own.
 
 Soft banlist - lives in the Smart Filter. The text still reaches the model; the
@@ -143,7 +143,7 @@ def _save(data):
 
 
 # --------------------------------------------------------------------------
-# HARD banlist (Jesse's) - enforced before inference
+# HARD banlist (operator's) - enforced before inference
 # --------------------------------------------------------------------------
 def hard_is_blocked(node_id):
     node = norm_node(node_id)
@@ -157,7 +157,7 @@ def hard_list():
 
 
 def hard_add(node_id, name="", reason="", evidence="", by="jesse"):
-    """Jesse-only. Never called automatically by triage or the persona."""
+    """Operator-only. Never called automatically by triage or the persona."""
     node = norm_node(node_id)
     if not node:
         return False, "empty node id"
@@ -315,7 +315,7 @@ def _ts(value):
 # --------------------------------------------------------------------------
 _TARGET = re.compile(
     r"\b(ai|a\.i\.|a i |bot|bots|chatbot|chatbots|robot|robots|model|models|llm|llms"
-    r"|algorithm|algorithms|automation|xen|xenmesh|agent|agents)\b"
+    r"|algorithm|algorithms|automation|chatbot|robo|agent|agents)\b"
     r"|humans?[ -]?only", re.I)
 _STRONG = re.compile(
     r"(should\s+be\s+banned?|ban\s+(all\s+)?(the\s+)?(bots?|ais?|robots?)"

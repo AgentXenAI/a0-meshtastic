@@ -1,4 +1,4 @@
-"""Escalation triggers T1-T4 and the Discord ping to Jesse.
+"""Escalation triggers T1-T4 and the Discord ping to the operator.
 
 Bridge code owns escalation, never the stranger persona - otherwise a stranger
 could summon a ban or a notification through Xen. Every trigger here is a
@@ -73,7 +73,7 @@ def _ping_allowed(node):
 
 
 async def _discord_ping(config, node, name, text, triggers):
-    """Best-effort Discord notification to Jesse. Never raises into the mesh path."""
+    """Best-effort Discord notification to the operator. Never raises into the mesh path."""
     channel = str(config.get("bridge", {}).get("escalation_discord_channel", "") or "").strip()
     if not channel:
         logger.info("escalation ping suppressed (no escalation_discord_channel set): %s %s",

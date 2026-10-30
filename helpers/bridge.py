@@ -41,7 +41,8 @@ _INVISIBLE = re.compile(r"[\u200b-\u200f\u2060-\u2064\ufeff\u00ad]+")
 
 _SENT_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sent-log.jsonl")
 _ledger = None
-_SELF_LONG_NAME = "xenmesh"
+def _self_long_name(bridge_cfg):
+    return str((bridge_cfg or {}).get("self_long_name", "") or "").strip()
 
 
 def _sent_log_path():
@@ -78,7 +79,18 @@ def _remember_sent(msg_id, channel):
 
 
 def _mention_tokens(bridge):
-    return _gate().mention_tokens(bridge.get("self_node_id", ""), _SELF_LONG_NAME)
+    return _gate().mention_tokens(bridge.get("self_node_id", ""), _self_long_name(bridge))
+
+
+def _bare_tokens(bridge):
+    """Un-@'d whole-word tokens that address us (node-id tail + config extras).
+
+    Clients show a short name and the last 4 hex of the node id, and people type
+    those bare. Without this the gate drops "hello ab12", the only form of
+    address most mesh users know.
+    """
+    return _gate().bare_tokens(bridge.get("self_node_id", ""), _self_long_name(bridge),
+                               bridge.get("mention_bare_tokens") or [])
 
 
 def _sanitize(text, limit=500):
@@ -229,7 +241,7 @@ def _handle_packet(packet, interface, config):
         except Exception:
             pass
 
-        # hard banlist: text never enters inference, never pings Jesse.
+        # hard banlist: text never enters inference, never pings the operator.
         try:
             if _banlists().hard_is_blocked(frm):
                 logger.info("Meshtastic hard-banned node dropped (%s)", frm)
@@ -260,7 +272,8 @@ def _handle_packet(packet, interface, config):
             rid = (decoded or {}).get("replyId") or (decoded or {}).get("reply_id")
             allowed, reason = _gate().evaluate(text, rid, channel,
                                                _mention_tokens(bridge),
-                                               _ledger_instance(), my_id_str, frm)
+                                               _ledger_instance(), my_id_str, frm,
+                                               bare=_bare_tokens(bridge))
             if not allowed:
                 logger.info("Meshtastic broadcast ignored (%s): %s", frm, reason)
                 return
@@ -548,12 +561,25 @@ def stop_bridge():
     return get_status()
 
 
+def is_configured(conn):
+    """True when the connection block points at something we can reach.
+
+    Firefly has no host/port - its readiness is the base_url. Kept in one place
+    so sync_bridge and the status API can never disagree about whether the
+    bridge is configured.
+    """
+    conn = conn or {}
+    if str(conn.get("host", "")).strip():
+        return True
+    if str(conn.get("transport", "tcp")).lower() == "firefly":
+        return bool(str((conn.get("firefly", {}) or {}).get("base_url", "")).strip())
+    return False
+
+
 async def sync_bridge(config):
     bridge = config.get("bridge", {})
     conn = config["connection"]
-    ready = bool(str(conn.get("host", "")).strip()) or \
-        str(conn.get("transport", "tcp")).lower() == "firefly" and \
-        bool(str((conn.get("firefly", {}) or {}).get("base_url", "")).strip())
+    ready = is_configured(conn)
     if bridge.get("auto_start") and ready and not _bridge["running"]:
         try:
             await asyncio.to_thread(start_bridge, config)

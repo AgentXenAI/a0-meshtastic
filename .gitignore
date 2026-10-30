@@ -10,3 +10,6 @@ inbound-log.jsonl
 data/
 config.json
 config.json.bak*
+*.bak*
+blocklist.json
+sent-log.jsonl

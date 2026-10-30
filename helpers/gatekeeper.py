@@ -8,10 +8,12 @@ readable in one screen and testable without a radio.
 Design rules, in order of priority:
 
 1. Default is silence. A message is passed ONLY if it matches an explicit
-   mention token (@xenmesh, @!b4c5d7fa, ...) or is a reply to a packet this
+   mention token (@mynode, @!aabbccdd, ...) or is a reply to a packet this
    node actually sent. Everything else is dropped.
-2. The mention test is a regex over literal tokens. No fuzzy matching, no
-   substring on bare words, so "xenmesh is a bot" is not a request for a reply.
+2. The mention test is a regex over literal tokens. No fuzzy matching and no
+   substring matching. Bare (un-@'d) tokens are allowed only if they are listed
+   in `mention_bare_tokens` / derived by `bare_tokens()`, and even then they must
+   match as a WHOLE WORD - so "ab12" addresses us but "ab123" does not.
 3. The reply test uses a ledger of our own on-wire packet ids. The ledger is fed
    by OBSERVING our own packets come back over the air (rebroadcasts), not only
    by the send call reporting an id - a send that returns no id would otherwise
@@ -135,13 +137,57 @@ def mention_tokens(self_node_id, long_name):
     return out
 
 
+def bare_tokens(self_node_id, long_name, extra=None):
+    """Whole-word tokens that address this node WITHOUT an `@`.
+
+    Mesh clients show a node's short name and the last 4 hex of its node id, and
+    people type those bare - "hello ab12" is plainly addressed at us even though
+    it has no `@` and no `!`. Without this the gate silently drops the only form
+    of address most users know.
+
+    `extra` (config `mention_bare_tokens`) is appended verbatim. The long name is
+    deliberately NOT included by default: a bare dictionary word lets ordinary
+    prose ("mynode is a bot") summon a reply on shared airtime. Add it to the
+    config list only if that trade-off is wanted.
+    """
+    out = []
+    node = str(self_node_id or "").strip().lstrip("!")
+    if len(node) >= 4 and re.fullmatch(r"[0-9a-fA-F]+", node):
+        out.append(node[-4:])
+    for tok in (extra or []):
+        tok = str(tok or "").strip()
+        if tok:
+            out.append(tok)
+    seen, res = set(), []
+    for tok in out:
+        low = tok.lower()
+        if low not in seen:
+            seen.add(low)
+            res.append(tok)
+    return res
+
+
+def build_bare_regex(tokens):
+    """Compile a whole-word, case-insensitive regex for bare mention tokens.
+
+    The boundaries exclude alphanumerics and underscore so a token cannot match
+    inside a longer word, while still allowing punctuation and whitespace
+    adjacency ("ab12,", "hi (ab12)").
+    """
+    if not tokens:
+        return None
+    parts = [re.escape(tok) for tok in tokens]
+    return re.compile(r"(?<![0-9a-z_])(" + "|".join(parts) + r")(?![0-9a-z_])",
+                      re.IGNORECASE)
+
+
 def build_regex(tokens):
     """Compile one case-insensitive regex from literal mention tokens.
 
     re.escape each token so a node id or name containing regex metacharacters
     cannot widen the match. A token must be followed by a non-word boundary
     (whitespace, punctuation or end of string) so '@xen' does not match
-    '@xenmesh' - a shorter name must not impersonate a longer one.
+    '@mynode' - a shorter name must not impersonate a longer one.
     """
     if not tokens:
         return None
@@ -154,7 +200,8 @@ def is_self(frm, self_node_id):
     return bool(self_node_id) and str(frm) == str(self_node_id)
 
 
-def evaluate(text, reply_id, channel, tokens, ledger, self_node_id=None, frm=None):
+def evaluate(text, reply_id, channel, tokens, ledger, self_node_id=None, frm=None,
+             bare=None):
     """Return (allowed: bool, reason: str). Never raises.
 
     reply_id is the packet's decoded replyId - the on-wire id of the message the
@@ -172,6 +219,11 @@ def evaluate(text, reply_id, channel, tokens, ledger, self_node_id=None, frm=Non
         match = rx.search(str(text or ""))
         if match:
             return True, f"mention:{match.group(0)}"
+        brx = build_bare_regex(bare)
+        if brx is not None:
+            bmatch = brx.search(str(text or ""))
+            if bmatch:
+                return True, f"bare-mention:{bmatch.group(0)}"
         if reply_id and ledger.has(reply_id, channel):
             return True, f"reply-to-mine:{reply_id}"
         return False, "not-addressed"
@@ -190,8 +242,11 @@ def _audit(limit):
     except Exception:
         pass
     bridge_cfg = cfg.get("bridge", {})
-    self_node = str(bridge_cfg.get("self_node_id", "") or "!b4c5d7fa")
-    tokens = mention_tokens(self_node, "xenmesh")
+    self_node = str(bridge_cfg.get("self_node_id", "") or "")
+    long_name = str(bridge_cfg.get("self_long_name", "") or "").strip()
+    tokens = mention_tokens(self_node, long_name)
+    bare = bare_tokens(self_node, long_name,
+                       bridge_cfg.get("mention_bare_tokens") or [])
     ledger = Ledger(os.path.join(base, "sent-log.jsonl"))
     print(f"self={self_node}  tokens={tokens}  ledger={len(ledger.snapshot())} ids")
     print("-" * 78)
@@ -202,7 +257,8 @@ def _audit(limit):
         return
     for row in rows[-int(limit):]:
         allowed, reason = evaluate(row.get("text", ""), None, row.get("channel", 0),
-                                   tokens, ledger, self_node, row.get("from"))
+                                   tokens, ledger, self_node, row.get("from"),
+                                   bare=bare)
         flag = "PASS " if allowed else "drop "
         print(f"{flag} [{row.get('kind','?'):9}] {str(row.get('name',''))[:22]:22} "
               f"{reason:22} {str(row.get('text',''))[:44]!r}")

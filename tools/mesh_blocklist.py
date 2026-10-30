@@ -7,11 +7,11 @@ class MeshBlocklist(Tool):
     """Inspect and manage the Meshtastic banlists.
 
     Two lists, one file (banlists.json):
-      hard  - Jesse's. Enforced before any model runs; a hard node's text never
+      hard  - the operator's. Enforced before any model runs; a hard node's text never
               reaches inference and never pings. READ-ONLY here on purpose: there
-              is no agent-reachable write path to the hard list. Jesse edits
+              is no agent-reachable write path to the hard list. The operator edits
               banlists.json directly.
-      soft  - Xen's rap-sheet. Reply-gating: the text still reaches the model,
+      soft  - the agent's rap-sheet. Reply-gating: the text still reaches the model,
               the bridge just declines to answer. Each entry carries an
               append-only offence history (timestamp, text, trigger, reason).
               Xen adds/clears soft entries at its discretion; the bridge writes
@@ -107,8 +107,8 @@ class MeshBlocklist(Tool):
             if action in ("block", "unblock", "promote"):
                 return Response(
                     message=("The HARD banlist has no agent-reachable write path (by design). "
-                             "Jesse edits banlists.json directly. Use softban/softclear for "
-                             "Xen's own reply-gating."), break_loop=False)
+                             "The operator edits banlists.json directly. Use softban/softclear for "
+                             "the agent's own reply-gating."), break_loop=False)
 
             return Response(message="Unknown action. Use status, rap, scan, recent, score, "
                                     "softban, softclear.", break_loop=False)

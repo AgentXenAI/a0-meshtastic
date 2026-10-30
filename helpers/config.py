@@ -58,9 +58,10 @@ def get_meshtastic_config(agent=None):
     bridge.setdefault("allowed_nodes", [])
     bridge.setdefault("respond_to_broadcasts", False)
     bridge.setdefault("channel_index", 0)
-    # This node's own id, e.g. "!b4c5d7fa". Used to build the @mention token that
-    # gates public replies. Left empty, only "@xenmesh" addresses the node.
+    # This node's own id, e.g. "!aabbccdd". Used to build the @mention token that
+    # gates public replies. self_long_name adds "@<long name>" on top of it.
     bridge.setdefault("self_node_id", "")
+    bridge.setdefault("self_long_name", "")
     bridge.setdefault("instructions", "")
     bridge.setdefault("default_agent_profile", "")
     # Per-trust-class profiles: trusted DMs vs public broadcasts.
@@ -76,13 +77,25 @@ def get_meshtastic_config(agent=None):
     bridge.setdefault("rate_limit_window", 120)
     # Escalation: Discord channel id that receives T2/T3 pings. Empty = no ping.
     bridge.setdefault("escalation_discord_channel", "")
+    # Extra un-@'d whole-word tokens that address this node (the node-id tail,
+    # node ID tail, e.g. "ab12", is always accepted automatically). Keep short: every
+    # entry can summon a reply out of ordinary public prose.
+    if not isinstance(bridge.get("mention_bare_tokens"), list):
+        bridge["mention_bare_tokens"] = []
     # Conversation starter (Xen opening a thread). Off by default.
     bridge.setdefault("starter_enabled", False)
     bridge.setdefault("starter_idle_hours", 4)
     bridge.setdefault("starter_max_per_day", 1)
+    # Minimum spacing between two openers regardless of every other gate.
+    bridge.setdefault("starter_min_interval_minutes", 240)
+    # Consecutive failed/dropped attempts that open the circuit until restart.
+    bridge.setdefault("starter_max_failures", 3)
     bridge.setdefault("starter_quiet_start", "23:00")
     bridge.setdefault("starter_quiet_end", "07:00")
     bridge.setdefault("starter_agent_profile", "")
+    # Verified facts the starter prompt may state about this node (hardware,
+    # transport). Empty = the starter claims nothing about the deployment.
+    bridge.setdefault("starter_known_facts", "")
 
     send = config.setdefault("send", {})
     send.setdefault("allow_broadcast", False)

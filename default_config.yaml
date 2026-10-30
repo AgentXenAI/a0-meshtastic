@@ -14,9 +14,9 @@ connection:
   host: ""
   port: 4403
   # Firefly transport settings (used only when transport is "firefly").
-  # Firefly runs as the zz-firefly container on the xenai host with
-  # network_mode: host; web UI on :5011. Auth is session-cookie login, there is
-  # no API token, so the bridge logs in with a real account.
+  # Firefly typically runs as a host-side container with network_mode: host;
+  # web UI on :5011. Auth is session-cookie login, there is no API token, so the
+  # bridge logs in with a real account.
   firefly:
     base_url: ""
     username: ""
@@ -54,6 +54,13 @@ bridge:
   max_message_length: 200
   rate_limit_max: 3
   rate_limit_window: 120
+  # Extra un-@'d words that count as addressing this node. The last 4 hex of
+  # self_node_id is ALWAYS accepted without being listed here, because mesh
+  # clients show that tail and users type it bare.
+  # Only add entries you are sure cannot appear in ordinary conversation - each
+  # one can summon a reply out of general channel chatter. The long name is not
+  # accepted bare on purpose.
+  mention_bare_tokens: []
   # Discord channel id that receives escalation pings (T2 injection / T3 PII).
   # Empty = escalation is logged but never pinged. One ping per node per 24h.
   escalation_discord_channel: ""
@@ -66,6 +73,11 @@ bridge:
   starter_quiet_start: "23:00"
   starter_quiet_end: "07:00"
   starter_agent_profile: ""
+  # Verified facts the starter may state about this node (hardware, transport).
+  # Empty = the starter claims nothing about your deployment. Never put secrets here.
+  starter_known_facts: ""
+  # This node long name, used for the @mention gate. Empty = node ID only.
+  self_long_name: ""
 
 # Outbound sends via the meshtastic_send tool.
 send:

@@ -104,7 +104,7 @@ async def _nodes(search):
 async def _packets(node, limit):
     nid = _node_to_int(node)
     if nid is None:
-        return "Meshview: give a node id like !b4c5d7fa (or decimal) for packets lookup."
+        return "Meshview: give a node id like !aabbccdd (or decimal) for packets lookup."
     data = await _get("/api/packets", {"from_node_id": nid, "limit": limit})
     rows = (data.get("packets", []) or [])[:MAX_ROWS]
     if not rows:
@@ -138,7 +138,7 @@ class Meshview(Tool):
                 node = self.args.get("from_node_id") or self.args.get("node") or self.args.get("search")
                 limit = max(1, min(int(self.args.get("limit", 10)), MAX_ROWS))
                 if not node:
-                    return Response(message="Error: 'packets' needs a node id (e.g. !b4c5d7fa).", break_loop=False)
+                    return Response(message="Error: 'packets' needs a node id (e.g. !aabbccdd).", break_loop=False)
                 msg = await _packets(node, limit)
             else:
                 return Response(message="Unknown action. Use seen, nodes, or packets.", break_loop=False)

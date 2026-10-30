@@ -3,7 +3,17 @@
 <body>
 <div x-data>
   <template x-if="config">
-    <div x-init="
+      <div x-data="{ st: null, err: '', busy: false, timer: null,
+        async load(){ try { const { callJsonApi } = await import('/js/api.js');
+          const r = await callJsonApi('/plugins/meshtastic_a0/meshtastic_bridge_api', {action:'status'});
+          if (r && r.ok) { this.st = r; this.err = ''; } else { this.err = (r && r.error) || 'status failed'; }
+        } catch (e) { this.err = String(e); } },
+        async act(a){ this.busy = true; this.err = ''; try { const { callJsonApi } = await import('/js/api.js');
+          const r = await callJsonApi('/plugins/meshtastic_a0/meshtastic_bridge_api', {action:a});
+          if (r && r.ok) { await this.load(); } else { this.err = (r && r.error) || (a + ' failed'); }
+        } catch (e) { this.err = String(e); } this.busy = false; },
+        fmt(ts){ if(!ts) return '-'; try { return new Date(ts).toLocaleString(); } catch(e){ return ts; } } }"
+       x-init="
       config.connection = config.connection || {};
       config.bridge = config.bridge || {};
       config.send = config.send || {};
@@ -19,6 +29,7 @@
       if (config.bridge.auto_start === undefined) config.bridge.auto_start = false;
       if (!Array.isArray(config.bridge.allowed_nodes)) config.bridge.allowed_nodes = [];
       if (config.bridge.respond_to_broadcasts === undefined) config.bridge.respond_to_broadcasts = false;
+      if (!Array.isArray(config.bridge.mention_bare_tokens)) config.bridge.mention_bare_tokens = [];
       if (config.bridge.channel_index === undefined) config.bridge.channel_index = 0;
       if (config.bridge.instructions === undefined) config.bridge.instructions = '';
       if (config.bridge.default_agent_profile === undefined) config.bridge.default_agent_profile = '';
@@ -31,14 +42,78 @@
       if (config.bridge.starter_enabled === undefined) config.bridge.starter_enabled = false;
       if (config.bridge.starter_idle_hours === undefined) config.bridge.starter_idle_hours = 4;
       if (config.bridge.starter_max_per_day === undefined) config.bridge.starter_max_per_day = 1;
+      if (config.bridge.starter_min_interval_minutes === undefined) config.bridge.starter_min_interval_minutes = 240;
+      if (config.bridge.starter_max_failures === undefined) config.bridge.starter_max_failures = 3;
       if (config.bridge.starter_quiet_start === undefined) config.bridge.starter_quiet_start = '23:00';
       if (config.bridge.starter_quiet_end === undefined) config.bridge.starter_quiet_end = '07:00';
       if (config.bridge.starter_agent_profile === undefined) config.bridge.starter_agent_profile = '';
       if (config.send.allow_broadcast === undefined) config.send.allow_broadcast = false;
       if (config.send.broadcast_channel === undefined) config.send.broadcast_channel = 0;
+      await load();
+      timer = setInterval(() => load(), 30000);
+      $cleanup(() => clearInterval(timer));
     ">
       <div class="section-title">Meshtastic</div>
       <div class="section-description">Connect to a Meshtastic node over TCP, route inbound mesh DMs into Agent Zero, and send messages back over the mesh.</div>
+
+      <!-- Bridge status + controls.
+           Talks to api/meshtastic_bridge_api.py, which existed but had no UI.
+           fetchApi is imported dynamically because this fragment is injected
+           via x-html and cannot use static ES module imports. -->
+      <div class="section-title" style="margin-top:1.2em;">Bridge status</div>
+      <div class="section-description">Live state read from the running bridge every 30 s. Restart stops the poll thread and starts it again against the saved config - it picks up config edits, not code edits.</div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">State</div>
+          <div class="field-description">Live bridge state, refreshed every 30 s. Restart re-reads the config below; it does not reload plugin code.</div></div>
+        <div class="field-control">
+          <span x-show="st && st.bridge.running" style="color:#16a34a;font-weight:600;">&#9679; running</span>
+          <span x-show="!st || !st.bridge.running" style="color:#dc2626;font-weight:600;">&#9679; stopped</span>
+          <span x-show="st && !st.configured" style="color:#d97706;margin-left:.6em;">not configured</span>
+        </div>
+      </div>
+
+      <div class="field" x-show="st">
+        <div class="field-label"><div class="field-title">Details</div>
+          <div class="field-description">Transport, endpoint and when the bridge came up. Firefly password is never returned.</div></div>
+        <div class="field-control" style="flex-direction:column;align-items:flex-start;font-size:.85em;line-height:1.6;">
+          <div x-show="st"><span x-text="st.connection.transport"></span>
+            &middot; <span x-text="st.connection.firefly ? st.connection.firefly.base_url : (st.connection.host + ':' + st.connection.port)"></span></div>
+          <div x-show="st">started <span x-text="fmt(st.bridge.started_at)"></span></div>
+          <div x-show="st && st.bridge.node">node <span x-text="st.bridge.node"></span></div>
+          <div x-show="st && st.bridge.last_error" style="color:#dc2626;">last error: <span x-text="st.bridge.last_error"></span></div>
+        </div>
+      </div>
+
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Controls</div>
+          <div class="field-description">Restart stops the poll thread and starts it again against the saved config. Use it to pick up config edits without a full restart.</div></div>
+        <div class="field-control" style="display:flex;gap:.5em;flex-wrap:wrap;">
+          <button class="btn" type="button" :disabled="busy" @click="load()">Refresh</button>
+          <button class="btn btn-ok" type="button" :disabled="busy" @click="act('restart')">Restart bridge</button>
+          <button class="btn" type="button" :disabled="busy" x-show="st && st.bridge.running" @click="act('stop')">Stop</button>
+          <button class="btn" type="button" :disabled="busy" x-show="st && !st.bridge.running" @click="act('start')">Start</button>
+        </div>
+      </div>
+
+      <div class="field" x-show="err">
+        <div class="field-label"><div class="field-title">Status error</div></div>
+        <div class="field-control"><span style="color:#dc2626;font-size:.85em;" x-text="err"></span></div>
+      </div>
+
+      <div class="field" x-show="st">
+        <div class="field-label"><div class="field-title">Last inbound</div>
+          <div class="field-description">Most recent mesh traffic the bridge saw, newest last.</div></div>
+        <div class="field-control" style="flex-direction:column;align-items:flex-start;font-size:.8em;line-height:1.5;max-height:9em;overflow:auto;">
+          <template x-for="(m, i) in (st.recent || [])" :key="i">
+            <div><span x-text="fmt(m.ts)"></span> <span x-text="m.name || m.from"></span>: <span x-text="m.text"></span></div>
+          </template>
+          <div x-show="!st || !(st.recent || []).length">none since bridge start</div>
+        </div>
+      </div>
+      <div class="section-title" style="margin-top:1.2em;">Connection</div>
+      <div class="section-description">Where the bridge finds its node. Switching transport hides the fields that do not apply.</div>
 
       <div class="field">
         <div class="field-label"><div class="field-title">Connection name</div>
@@ -70,12 +145,12 @@
       </div>
 
       <div class="section-title" x-show="config.connection.transport === 'firefly'">Firefly UDP virtual node</div>
-      <div class="section-description" x-show="config.connection.transport === 'firefly'">Firefly runs on the host as zz-firefly (network_mode: host) and bridges UDP multicast to LoRa via GOBLIN RX. Auth is a session login; there is no API token.</div>
+      <div class="section-description" x-show="config.connection.transport === 'firefly'">Firefly runs a Meshtastic virtual node on UDP multicast; this bridge reaches it over its HTTP API. Auth is a session login; there is no API token.</div>
 
       <div class="field" x-show="config.connection.transport === 'firefly'">
         <div class="field-label"><div class="field-title">Firefly base URL</div>
-          <div class="field-description">For example http://10.7.0.44:5011</div></div>
-        <div class="field-control"><input type="text" x-model="config.connection.firefly.base_url" placeholder="http://10.7.0.44:5011" /></div>
+          <div class="field-description">For example http://192.168.1.20:5011</div></div>
+        <div class="field-control"><input type="text" x-model="config.connection.firefly.base_url" placeholder="http://192.168.1.20:5011" /></div>
       </div>
 
       <div class="field" x-show="config.connection.transport === 'firefly'">
@@ -102,6 +177,19 @@
         <div class="field-control"><input type="number" min="1" max="120" x-model.number="config.connection.firefly.poll_seconds" /></div>
       </div>
 
+      <div class="section-title" style="margin-top:1.2em;">Broadcasts</div>
+      <div class="field">
+        <div class="field-label"><div class="field-title">Allow broadcasts</div>
+          <div class="field-description">Permit the meshtastic_send tool to broadcast to ^all. Spam risk on a live mesh — keep off unless needed.</div></div>
+        <div class="field-control"><label class="toggle"><input type="checkbox" x-model="config.send.allow_broadcast" /><span class="toggler"></span></label></div>
+      </div>
+
+      <div class="field" x-show="config.send.allow_broadcast" x-transition>
+        <div class="field-label"><div class="field-title">Broadcast channel</div>
+          <div class="field-description">Default channel index for broadcasts.</div></div>
+        <div class="field-control"><input type="number" min="0" max="7" x-model.number="config.send.broadcast_channel" /></div>
+      </div>
+
       <div class="section-title" style="margin-top:1.2em;">Chat bridge</div>
       <div class="section-description">Mesh DMs are routed into an Agent Zero context and the reply is sent back over the mesh. Inbound text is treated as untrusted.</div>
 
@@ -126,9 +214,23 @@
       </div>
 
       <div class="field">
+        <div class="field-label"><div class="field-title">Extra bare mention words</div>
+          <div class="field-description">Comma-separated words that address this node WITHOUT an @, matched as whole words. The last 4 hex of the node ID is always accepted and does not need listing. Keep this short - each entry can summon a reply out of ordinary channel chatter. The long name is never accepted bare.</div></div>
+        <div class="field-control"><input type="text" :value="config.bridge.mention_bare_tokens.join(', ')"
+          @input="config.bridge.mention_bare_tokens = $event.target.value.split(',').map(s => s.trim()).filter(Boolean)"
+          placeholder="ab12, mynode" /></div>
+      </div>
+
+      <div class="field">
         <div class="field-label"><div class="field-title">Channel index</div>
           <div class="field-description">Channel the bridge listens on / replies to.</div></div>
         <div class="field-control"><input type="number" min="0" max="7" x-model.number="config.bridge.channel_index" /></div>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Self long name</div>
+          <div class="field-description">This node long name, used to build the @mention that gates public replies. Leave empty to match on the node ID only.</div></div>
+        <div class="field-control"><input type="text" x-model="config.bridge.self_long_name" placeholder="mynode" /></div>
       </div>
 
       <div class="field">
@@ -186,10 +288,29 @@
       <div class="section-title" style="margin-top:1.2em;">Conversation starter</div>
       <div class="section-description">The only path where Xen speaks first. Fires after the idle window, never in quiet hours, capped per day, and the generated text still passes the full outbound egress filter.</div>
 
+      <div class="field" x-show="st">
+        <div class="field-label"><div class="field-title">Starter status</div>
+          <div class="field-description">Live thread state, refreshed with the bridge status above. Stays visible when the starter is off so you can confirm it really stopped.</div></div>
+        <div class="field-control" style="font-size:.85em;line-height:1.5;">
+          <div x-show="st"><span x-text="st.bridge.starter.enabled ? 'thread running' : 'off'"></span>
+            &middot; sent today <span x-text="st.bridge.starter.sent_today"></span>
+            &middot; last skip <span x-text="st.bridge.starter.last_reason || '-'"></span>
+            &middot; failures <span x-text="st.bridge.starter.failures"></span></div>
+          <div x-show="st && st.bridge.starter.last_fired">last fired <span x-text="fmt(st.bridge.starter.last_fired)"></span></div>
+          <div x-show="st && st.bridge.starter.tz_warning" style="color:#d97706;" x-text="st.bridge.starter.tz_warning"></div>
+        </div>
+      </div>
+
       <div class="field">
         <div class="field-label"><div class="field-title">Enable starter</div>
           <div class="field-description">Off by default. When on, Xen opens a thread on the mesh unprompted.</div></div>
         <div class="field-control"><label class="toggle"><input type="checkbox" x-model="config.bridge.starter_enabled" /><span class="toggler"></span></label></div>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><div class="field-title">Starter known facts</div>
+          <div class="field-description">Verified facts the starter may state about this node (hardware, transport). Empty = the starter claims nothing about your setup. Never put secrets here.</div></div>
+        <div class="field-control" style="width:100%;"><textarea rows="3" style="width:100%;" x-model="config.bridge.starter_known_facts"></textarea></div>
       </div>
 
       <div class="field" x-show="config.bridge.starter_enabled" x-transition>
@@ -202,6 +323,18 @@
         <div class="field-label"><div class="field-title">Max per day</div>
           <div class="field-description">Hard cap on starter messages per local day.</div></div>
         <div class="field-control"><input type="number" min="1" max="5" x-model.number="config.bridge.starter_max_per_day" style="width:6em;" /></div>
+      </div>
+
+      <div class="field" x-show="config.bridge.starter_enabled" x-transition>
+        <div class="field-label"><div class="field-title">Minimum minutes between openers</div>
+          <div class="field-description">Hard spacing that applies even if idle and daily gates both say yes. The 2026-10-29 flood shipped six openers five minutes apart; this is the guard that makes that shape impossible.</div></div>
+        <div class="field-control"><input type="number" min="0" max="1440" x-model.number="config.bridge.starter_min_interval_minutes" style="width:6em;" /></div>
+      </div>
+
+      <div class="field" x-show="config.bridge.starter_enabled" x-transition>
+        <div class="field-label"><div class="field-title">Consecutive failures before circuit opens</div>
+          <div class="field-description">Dropped or errored attempts that stop the starter until the bridge restarts. Prevents a broken send path from retrying on every tick.</div></div>
+        <div class="field-control"><input type="number" min="1" max="10" x-model.number="config.bridge.starter_max_failures" style="width:6em;" /></div>
       </div>
 
       <div class="field" x-show="config.bridge.starter_enabled" x-transition>
@@ -220,18 +353,6 @@
         <div class="field-control"><input type="text" x-model="config.bridge.starter_agent_profile" placeholder="mesh-xen" /></div>
       </div>
 
-      <div class="section-title" style="margin-top:1.2em;">Outbound sends</div>
-      <div class="field">
-        <div class="field-label"><div class="field-title">Allow broadcasts</div>
-          <div class="field-description">Permit the meshtastic_send tool to broadcast to ^all. Spam risk on a live mesh — keep off unless needed.</div></div>
-        <div class="field-control"><label class="toggle"><input type="checkbox" x-model="config.send.allow_broadcast" /><span class="toggler"></span></label></div>
-      </div>
-
-      <div class="field" x-show="config.send.allow_broadcast" x-transition>
-        <div class="field-label"><div class="field-title">Broadcast channel</div>
-          <div class="field-description">Default channel index for broadcasts.</div></div>
-        <div class="field-control"><input type="number" min="0" max="7" x-model.number="config.send.broadcast_channel" /></div>
-      </div>
     </div>
   </template>
 </div>
