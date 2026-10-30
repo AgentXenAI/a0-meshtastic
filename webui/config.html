@@ -138,7 +138,7 @@
         <div class="field-control"><input type="text" x-model="config.connection.host" placeholder="node.local" /></div>
       </div>
 
-      <div class="field">
+      <div class="field" x-show="config.connection.transport !== 'firefly'">
         <div class="field-label"><div class="field-title">Port</div>
           <div class="field-description">Meshtastic TCP API port (default 4403).</div></div>
         <div class="field-control"><input type="number" min="1" max="65535" x-model.number="config.connection.port" /></div>
